@@ -1,0 +1,24 @@
+# 模型权重
+weights/
+*.pth
+*.pt
+
+# 输入图片与输出标注
+images/*
+!images/.gitkeep
+annotations/*
+!annotations/.gitkeep
+
+# 微调产物
+yolo_dataset/
+runs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
