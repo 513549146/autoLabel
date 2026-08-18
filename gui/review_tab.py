@@ -29,6 +29,7 @@ class ReviewTab(ttk.Frame):
         self.rubber_id = None
         self.pan_start = None
         self.pan_origin = (0, 0)
+        self._manual_view = False
         self._build_ui()
 
     def _build_ui(self):
@@ -62,7 +63,7 @@ class ReviewTab(ttk.Frame):
         ttk.Button(bar3, text="实际大小", command=self._actual_size).pack(side=tk.LEFT, padx=4)
         ttk.Label(
             bar3,
-            text="滚轮缩放 | 中键拖动平移 | 左键拖拽画框 | 点击选中 | Delete 删除 | ←/→ 切换",
+            text="滚轮缩放 | 中键拖动平移 | 左键拖拽画框 | 点击选中 | Delete 删除 | Ctrl+S 保存 | ↑/↓ 切换",
             foreground="gray",
         ).pack(side=tk.LEFT, padx=10)
 
@@ -102,15 +103,16 @@ class ReviewTab(ttk.Frame):
 
         nav = ttk.Frame(self)
         nav.pack(fill=tk.X, pady=(6, 0))
-        ttk.Button(nav, text="上一张 (←)", command=self._prev).pack(side=tk.LEFT)
-        ttk.Button(nav, text="下一张 (→)", command=self._next).pack(side=tk.LEFT, padx=4)
+        ttk.Button(nav, text="上一张 (↑)", command=self._prev).pack(side=tk.LEFT)
+        ttk.Button(nav, text="下一张 (↓)", command=self._next).pack(side=tk.LEFT, padx=4)
         self.counter_var = tk.StringVar(value="0 / 0")
         ttk.Label(nav, textvariable=self.counter_var).pack(side=tk.LEFT, padx=8)
         self.status_var = tk.StringVar(value="")
         ttk.Label(nav, textvariable=self.status_var).pack(side=tk.RIGHT)
 
-        self.bind("<Left>", lambda e: self._prev())
-        self.bind("<Right>", lambda e: self._next())
+        self.bind("<Up>", lambda e: self._prev())
+        self.bind("<Down>", lambda e: self._next())
+        self.bind("<Control-s>", lambda e: self._save())
 
     # ---------- 目录 / 图片加载 ----------
     def _open_dir(self):
@@ -136,6 +138,7 @@ class ReviewTab(ttk.Frame):
     def _load_image(self, idx):
         if idx < 0 or idx >= len(self.img_files):
             return
+        self._autosave_current()
         self.cur_idx = idx
         fname = self.img_files[idx]
         image_path = os.path.join(self.images_dir, fname)
@@ -200,6 +203,7 @@ class ReviewTab(ttk.Frame):
     def _fit_window(self):
         if self.pil_img is None:
             return
+        self._manual_view = False
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
         if cw < 50 or ch < 50:
@@ -214,6 +218,7 @@ class ReviewTab(ttk.Frame):
     def _actual_size(self):
         if self.pil_img is None:
             return
+        self._manual_view = True
         self.zoom = 1.0
         self.pan_x = 0
         self.pan_y = 0
@@ -223,6 +228,7 @@ class ReviewTab(ttk.Frame):
     def _zoom_at(self, cx, cy, factor):
         if self.pil_img is None:
             return
+        self._manual_view = True
         ix = (cx - self.pan_x) / self.zoom
         iy = (cy - self.pan_y) / self.zoom
         new_zoom = max(0.02, min(self.zoom * factor, 20.0))
@@ -255,6 +261,7 @@ class ReviewTab(ttk.Frame):
     def _on_pan_drag(self, event):
         if self.pan_start is None:
             return
+        self._manual_view = True
         self.pan_x = self.pan_origin[0] + (event.x - self.pan_start[0])
         self.pan_y = self.pan_origin[1] + (event.y - self.pan_start[1])
         self._render()
@@ -265,7 +272,13 @@ class ReviewTab(ttk.Frame):
     def _on_canvas_resize(self, event):
         if getattr(self, "_resize_job", None):
             self.after_cancel(self._resize_job)
-        self._resize_job = self.after(120, self._render)
+        if self.pil_img is None:
+            return
+        # 未手动缩放/平移时，窗口变化自动重新适应；否则保持当前视角
+        if not self._manual_view:
+            self._resize_job = self.after(120, self._fit_window)
+        else:
+            self._resize_job = self.after(120, self._render)
 
     def _update_zoom_label(self):
         self.zoom_var.set(f"{int(self.zoom * 100)}%")
@@ -357,12 +370,17 @@ class ReviewTab(ttk.Frame):
             self._refresh_box_list()
 
     # ---------- 保存 / 重新标注 ----------
-    def _save(self):
+    def _autosave_current(self):
+        if self.cur_idx >= 0 and self.pil_img is not None and self.images_dir:
+            self._save(silent=True)
+
+    def _save(self, silent=False):
         if self.cur_idx < 0 or self.pil_img is None:
             return
         output_dir = self.output_var.get().strip()
         if not output_dir:
-            messagebox.showerror("错误", "请先设置输出目录")
+            if not silent:
+                messagebox.showerror("错误", "请先设置输出目录")
             return
         os.makedirs(output_dir, exist_ok=True)
         image_path = os.path.join(self.images_dir, self.img_files[self.cur_idx])
@@ -416,5 +434,5 @@ class ReviewTab(ttk.Frame):
 
     def _on_list_select(self, event):
         sel = self.listbox.curselection()
-        if sel:
+        if sel and sel[0] != self.cur_idx:
             self._load_image(sel[0])

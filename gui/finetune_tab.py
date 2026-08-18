@@ -177,12 +177,41 @@ class FineTuneTab(ttk.Frame):
             messagebox.showerror("路径错误", f"数据配置不存在: {data}")
             return
 
+        # 数据量检查：过少时提醒用户可能过拟合/不准确
+        n_train = self._count_train_images(data)
+        if n_train < config.MIN_TRAIN_IMAGES:
+            proceed = messagebox.askyesno(
+                "数据量较少",
+                f"训练集仅 {n_train} 张图片。\n\n"
+                "数据量过少容易导致模型过拟合、标注结果不准确。\n"
+                f"建议至少 {config.MIN_TRAIN_IMAGES} 张（推荐 200 张以上）。\n\n"
+                "是否仍然继续训练？",
+            )
+            if not proceed:
+                return
+
         self.stop_flag.clear()
         self.train_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         self.worker_thread = threading.Thread(
             target=self._train_worker, args=(data, model_name, epochs, imgsz, batch), daemon=True)
         self.worker_thread.start()
+
+    def _count_train_images(self, data_yaml):
+        """从 dataset.yaml 统计训练集图片数"""
+        try:
+            import yaml
+            with open(data_yaml, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            base = cfg.get("path", "") or ""
+            train = cfg.get("train", "images/train")
+            train_dir = os.path.join(base, train) if not os.path.isabs(train) else train
+            if not os.path.isdir(train_dir):
+                return 0
+            return len([f for f in os.listdir(train_dir)
+                        if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"))])
+        except Exception:
+            return 0
 
     def _stop(self):
         self.stop_flag.set()

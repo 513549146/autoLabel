@@ -187,7 +187,13 @@ def _load_yolo():
 
 def _detect_yolo(detector, image_path, prompt, box_threshold, text_threshold):
     model = detector.model
-    results = model.predict(image_path, conf=box_threshold, verbose=False)
+    results = model.predict(
+        image_path,
+        conf=box_threshold,
+        iou=config.YOLO_IOU,
+        max_det=config.YOLO_MAX_DET,
+        verbose=False,
+    )
     annotations = []
     if results and results[0].boxes is not None:
         for box in results[0].boxes:

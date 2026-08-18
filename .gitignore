@@ -22,3 +22,7 @@ venv/
 # IDE
 .idea/
 .vscode/
+
+# 临时文件
+*.part
+_tmp_train/

@@ -5,6 +5,8 @@ import random
 import shutil
 from xml.etree import ElementTree as ET
 
+import config
+
 IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 
 
@@ -110,6 +112,11 @@ def train_yolo(data, model_name="yolov8s.pt", epochs=100, imgsz=640, batch=16, d
     """微调训练 YOLO。返回 best.pt 路径（若找到）。"""
     from ultralytics import YOLO
 
+    # 项目内已预下载的权重优先使用，否则由 ultralytics 联网下载
+    local_path = os.path.join(config.WEIGHTS_DIR, model_name)
+    if os.path.isfile(local_path):
+        model_name = local_path
+
     model = YOLO(model_name)
     log(f"加载预训练模型: {model_name}")
 
@@ -129,6 +136,7 @@ def train_yolo(data, model_name="yolov8s.pt", epochs=100, imgsz=640, batch=16, d
             parts.append(f"mAP50-95={float(m50_95):.4f}")
         log("  ".join(parts))
 
+    model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
     model.train(
         data=data,
         epochs=epochs,
@@ -136,7 +144,6 @@ def train_yolo(data, model_name="yolov8s.pt", epochs=100, imgsz=640, batch=16, d
         batch=batch,
         device=device,
         verbose=False,
-        callbacks={"on_fit_epoch_end": on_fit_epoch_end},
     )
 
     best = getattr(model.trainer, "best", None)

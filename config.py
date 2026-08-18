@@ -25,6 +25,13 @@ DETECTOR = "gd15"
 GD15_DIR = os.path.join(WEIGHTS_DIR, "grounding-dino-base")
 YOLO_WEIGHTS = os.path.join(WEIGHTS_DIR, "yolo_best.pt")  # 微调后 YOLO 权重，训练后放在此处
 
+# YOLO 推理后处理参数
+YOLO_IOU = 0.5       # NMS 的 IoU 阈值，越低越激进合并重叠框（默认 0.7）
+YOLO_MAX_DET = 300   # 每张图最大检测框数
+
+# 微调训练数据量阈值：训练集图片数低于此值时会提醒用户（避免过拟合）
+MIN_TRAIN_IMAGES = 50
+
 # 数据目录
 INPUT_DIR = os.path.join(BASE_DIR, "images")
 OUTPUT_DIR = os.path.join(BASE_DIR, "annotations")
