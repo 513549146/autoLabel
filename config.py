@@ -1,4 +1,5 @@
 import os
+import sys
 
 # Hugging Face 镜像（国内直连 huggingface.co 会失败时自动走镜像）
 # 若你的网络可直连 HuggingFace，或想用其他镜像，请修改此处
@@ -8,12 +9,17 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
 os.environ["no_proxy"] = "localhost,127.0.0.1,::1"
 
-# 项目根目录
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 项目根目录（打包成 exe 后，指向 exe 所在目录，权重/数据等外部资源放在其旁）
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    BUNDLE_DIR = sys._MEIPASS  # 打包进 exe 的代码/数据文件解压目录
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    BUNDLE_DIR = BASE_DIR
 
 # 模型权重目录
 WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")
-GROUNDINGDINO_CONFIG = os.path.join(BASE_DIR, "groundingdino", "config", "GroundingDINO_SwinT_OGC.py")
+GROUNDINGDINO_CONFIG = os.path.join(BUNDLE_DIR, "groundingdino", "config", "GroundingDINO_SwinT_OGC.py")
 GROUNDINGDINO_WEIGHTS = os.path.join(WEIGHTS_DIR, "groundingdino_swint_ogc.pth")
 SAM_WEIGHTS = os.path.join(WEIGHTS_DIR, "sam_hq_vit_h.pth")
 # 本地 bert 文本编码器（已下载到项目内，无需联网）

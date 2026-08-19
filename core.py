@@ -72,6 +72,13 @@ def _load_gd_ogc():
     from groundingdino.util.misc import clean_state_dict
     import torch
 
+    if not os.path.isfile(config.GROUNDINGDINO_CONFIG):
+        raise FileNotFoundError(f"未找到模型配置: {config.GROUNDINGDINO_CONFIG}")
+    if not os.path.isfile(config.GROUNDINGDINO_WEIGHTS):
+        raise FileNotFoundError(f"未找到权重文件: {config.GROUNDINGDINO_WEIGHTS}\n请将 weights 文件夹放到程序同目录下")
+    if not os.path.isdir(config.BERT_ENCODER_DIR):
+        raise FileNotFoundError(f"未找到文本编码器: {config.BERT_ENCODER_DIR}\n请将 weights 文件夹放到程序同目录下")
+
     args = SLConfig.fromfile(config.GROUNDINGDINO_CONFIG)
     args.device = get_device()
     args.text_encoder_type = config.BERT_ENCODER_DIR
@@ -125,6 +132,8 @@ def _load_gd15():
     import torch
     from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
+    if not os.path.isdir(config.GD15_DIR):
+        raise FileNotFoundError(f"未找到模型目录: {config.GD15_DIR}\n请将 weights 文件夹放到程序同目录下")
     device = get_device()
     model = AutoModelForZeroShotObjectDetection.from_pretrained(config.GD15_DIR).to(device)
     processor = AutoProcessor.from_pretrained(config.GD15_DIR)
@@ -182,6 +191,8 @@ def _detect_gd15(detector, image_path, prompt, box_threshold, text_threshold):
 # ---------------------------------------------------------------------------
 def _load_yolo():
     from ultralytics import YOLO
+    if not os.path.isfile(config.YOLO_WEIGHTS):
+        raise FileNotFoundError(f"未找到 YOLO 权重: {config.YOLO_WEIGHTS}\n请先完成微调训练，或将权重放到 weights/yolo_best.pt")
     return YOLO(config.YOLO_WEIGHTS)
 
 

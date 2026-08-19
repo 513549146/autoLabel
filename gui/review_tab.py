@@ -9,6 +9,133 @@ import config
 import core
 
 
+class MultiSelectCombo(ttk.Frame):
+    """带复选框的下拉多选：默认全选，可取消勾选来过滤展示的框"""
+
+    def __init__(self, master, command=None, width=16):
+        super().__init__(master)
+        self.command = command
+        self._items = []
+        self._vars = {}
+        self._popup = None
+        self._all_var = tk.BooleanVar(value=True)
+        self._text = tk.StringVar(value="全选")
+
+        # 用只读 Combobox 作为触发框，下拉按钮样式与普通下拉框一致
+        self._combo = ttk.Combobox(self, textvariable=self._text, state="readonly", width=width)
+        self._combo.pack(fill=tk.X, expand=True)
+        self._combo.bind("<ButtonPress-1>", self._on_press)
+
+        self._refresh_display()
+
+    def _on_press(self, event):
+        self._toggle_popup()
+        return "break"
+
+    # ---- 对外接口 ----
+    def set_items(self, names):
+        """设置类别列表：新增类别默认选中，已有类别保留原勾选状态"""
+        self._close_popup()
+        for n in names:
+            if n not in self._vars:
+                self._vars[n] = tk.BooleanVar(value=True)
+        self._items = [n for n in names]
+        for n in list(self._vars.keys()):
+            if n not in self._items:
+                del self._vars[n]
+        self._sync_all_var()
+        self._refresh_display()
+
+    def get_selected(self):
+        return {n for n in self._items if self._vars[n].get()}
+
+    def select_all(self):
+        for n in self._items:
+            self._vars[n].set(True)
+        self._sync_all_var()
+        self._refresh_display()
+        self._notify()
+
+    def is_all_selected(self):
+        return bool(self._items) and all(self._vars[n].get() for n in self._items)
+
+    # ---- 显示 ----
+    def _refresh_display(self):
+        sel = self.get_selected()
+        if not self._items:
+            text = "无类别"
+        elif self.is_all_selected():
+            text = "全选"
+        elif not sel:
+            text = "无"
+        else:
+            text = ", ".join(sel)
+            if len(text) > 24:
+                text = text[:22] + "…"
+        self._text.set(text)
+
+    # ---- 弹层 ----
+    def _toggle_popup(self):
+        if self._popup is not None:
+            self._close_popup()
+        else:
+            self._open_popup()
+
+    def _open_popup(self):
+        self._close_popup()
+        popup = tk.Toplevel(self)
+        popup.wm_overrideredirect(True)
+        popup.configure(bg="#ffffff", highlightthickness=1, highlightbackground="#888888")
+
+        tk.Checkbutton(
+            popup, text="全选", variable=self._all_var, command=self._on_all_toggle,
+            anchor="w", bg="#ffffff", activebackground="#e8e8e8", padx=6, pady=2,
+        ).pack(fill=tk.X)
+        tk.Frame(popup, height=1, bg="#cccccc").pack(fill=tk.X)
+        for n in self._items:
+            tk.Checkbutton(
+                popup, text=n, variable=self._vars[n], command=self._on_item_toggle,
+                anchor="w", bg="#ffffff", activebackground="#e8e8e8", padx=6, pady=2,
+            ).pack(fill=tk.X)
+
+        self._sync_all_var()
+
+        x = self._combo.winfo_rootx()
+        y = self._combo.winfo_rooty() + self._combo.winfo_height()
+        popup.geometry(f"+{x}+{y}")
+
+        popup.bind("<FocusOut>", lambda e: self._close_popup())
+        popup.focus_set()
+        self._popup = popup
+
+    def _close_popup(self):
+        if self._popup is not None:
+            try:
+                self._popup.destroy()
+            except tk.TclError:
+                pass
+            self._popup = None
+
+    def _sync_all_var(self):
+        self._all_var.set(self.is_all_selected())
+
+    def _on_all_toggle(self):
+        val = self._all_var.get()
+        for n in self._items:
+            self._vars[n].set(val)
+        self._refresh_display()
+        self._notify()
+
+    def _on_item_toggle(self):
+        self._sync_all_var()
+        self._refresh_display()
+        self._notify()
+
+    def _notify(self):
+        if self.command:
+            self.command()
+
+
 class ReviewTab(ttk.Frame):
     """人工审核页：查看 / 修正预标注结果，支持缩放与平移"""
 
@@ -24,6 +151,7 @@ class ReviewTab(ttk.Frame):
         self.pan_x = 0
         self.pan_y = 0
         self.shapes = []
+        self._vis_idx = []
         self.selected = None
         self.drag_start = None
         self.rubber_id = None
@@ -44,6 +172,9 @@ class ReviewTab(ttk.Frame):
         bar2 = ttk.Frame(self)
         bar2.pack(fill=tk.X, pady=(4, 0))
         ttk.Label(bar2, text="类别:").pack(side=tk.LEFT)
+        self.filter_combo = MultiSelectCombo(bar2, command=self._on_cat_filter_change, width=16)
+        self.filter_combo.pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Label(bar2, text="标注:").pack(side=tk.LEFT)
         self.label_var = tk.StringVar()
         self.label_combo = ttk.Combobox(bar2, textvariable=self.label_var, width=14)
         self.label_combo.pack(side=tk.LEFT, padx=4)
@@ -74,7 +205,7 @@ class ReviewTab(ttk.Frame):
         left = ttk.Frame(main)
         ttk.Label(left, text="图片").pack(anchor=tk.W)
         self.listbox = tk.Listbox(left, width=22)
-        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.listbox.pack(fill=tk.BOTH, expand=True)
         self.listbox.bind("<<ListboxSelect>>", self._on_list_select)
 
         mid = ttk.Frame(main)
@@ -160,6 +291,8 @@ class ReviewTab(ttk.Frame):
         self.listbox.see(idx)
         self.counter_var.set(f"{idx + 1} / {len(self.img_files)}")
         self._refresh_categories()
+        self._collect_cats()
+        self._rebuild_vis_idx()
         self._refresh_box_list()
         self._fit_window()
         self.after(150, self._fit_window)
@@ -170,12 +303,40 @@ class ReviewTab(ttk.Frame):
         if not self.label_var.get() and cats:
             self.label_var.set(cats[0])
 
+    # ---------- 类别筛选 ----------
+    def _visible_cats(self):
+        return self.filter_combo.get_selected()
+
+    def _rebuild_vis_idx(self):
+        vis = self._visible_cats()
+        if vis:
+            self._vis_idx = [i for i, s in enumerate(self.shapes) if s["name"] in vis]
+        else:
+            self._vis_idx = []
+        if self.selected is not None and self.selected >= len(self._vis_idx):
+            self.selected = None
+
+    def _collect_cats(self):
+        prompt_cats = core.parse_categories(self.app.auto_tab.prompt_var.get())
+        shape_cats = []
+        for s in self.shapes:
+            if s["name"] and s["name"] not in shape_cats:
+                shape_cats.append(s["name"])
+        desired = prompt_cats + [c for c in shape_cats if c not in prompt_cats]
+        self.filter_combo.set_items(desired)
+
+    def _on_cat_filter_change(self, event=None):
+        self._rebuild_vis_idx()
+        self._render()
+        self._refresh_box_list()
+
     def _refresh_box_list(self):
         self.box_list.delete(0, tk.END)
-        for s in self.shapes:
+        for idx in self._vis_idx:
+            s = self.shapes[idx]
             x1, y1, x2, y2 = s["bbox"]
             self.box_list.insert(tk.END, f"{s['name']}  [{x1},{y1},{x2},{y2}]")
-        if self.selected is not None and 0 <= self.selected < len(self.shapes):
+        if self.selected is not None and 0 <= self.selected < len(self._vis_idx):
             self.box_list.selection_set(self.selected)
             self.box_list.see(self.selected)
 
@@ -189,13 +350,14 @@ class ReviewTab(ttk.Frame):
         img = self.pil_img.resize((dw, dh), Image.Resampling.LANCZOS)
         self.photo = ImageTk.PhotoImage(img)
         self.canvas.create_image(self.pan_x, self.pan_y, anchor=tk.NW, image=self.photo)
-        for i, s in enumerate(self.shapes):
+        for vi, idx in enumerate(self._vis_idx):
+            s = self.shapes[idx]
             x1, y1, x2, y2 = s["bbox"]
             cx1 = x1 * self.zoom + self.pan_x
             cy1 = y1 * self.zoom + self.pan_y
             cx2 = x2 * self.zoom + self.pan_x
             cy2 = y2 * self.zoom + self.pan_y
-            color = "#ff5252" if i == self.selected else "#00e676"
+            color = "#ff5252" if vi == self.selected else "#00e676"
             self.canvas.create_rectangle(cx1, cy1, cx2, cy2, outline=color, width=2)
             self.canvas.create_text(cx1, max(cy1 - 8, 2), anchor=tk.SW, text=s["name"],
                                     fill=color, font=("", 10, "bold"))
@@ -329,17 +491,23 @@ class ReviewTab(ttk.Frame):
             if x2 > x1 and y2 > y1:
                 label = self.label_var.get().strip() or "object"
                 self.shapes.append({"name": label, "bbox": [x1, y1, x2, y2]})
-                self.selected = len(self.shapes) - 1
+                self._collect_cats()
+                self._rebuild_vis_idx()
+                try:
+                    self.selected = self._vis_idx.index(len(self.shapes) - 1)
+                except ValueError:
+                    self.selected = None
                 self._render()
                 self._refresh_box_list()
 
     def _select_at(self, cx, cy):
         ix, iy = self._canvas_to_img(cx, cy)
-        for i in range(len(self.shapes) - 1, -1, -1):
-            x1, y1, x2, y2 = self.shapes[i]["bbox"]
+        for vi in range(len(self._vis_idx) - 1, -1, -1):
+            idx = self._vis_idx[vi]
+            x1, y1, x2, y2 = self.shapes[idx]["bbox"]
             if x1 <= ix <= x2 and y1 <= iy <= y2:
-                self.selected = i
-                self.label_var.set(self.shapes[i]["name"])
+                self.selected = vi
+                self.label_var.set(self.shapes[idx]["name"])
                 self._render()
                 self._refresh_box_list()
                 return
@@ -352,20 +520,30 @@ class ReviewTab(ttk.Frame):
         if not sel:
             return
         self.selected = sel[0]
-        self.label_var.set(self.shapes[self.selected]["name"])
+        idx = self._vis_idx[self.selected]
+        self.label_var.set(self.shapes[idx]["name"])
         self._render()
 
     def _apply_label(self):
         label = self.label_var.get().strip()
-        if label and self.selected is not None and 0 <= self.selected < len(self.shapes):
-            self.shapes[self.selected]["name"] = label
+        if label and self.selected is not None and 0 <= self.selected < len(self._vis_idx):
+            idx = self._vis_idx[self.selected]
+            self.shapes[idx]["name"] = label
+            self._collect_cats()
+            self._rebuild_vis_idx()
+            try:
+                self.selected = self._vis_idx.index(idx)
+            except ValueError:
+                self.selected = None
             self._render()
             self._refresh_box_list()
 
     def _delete_selected(self):
-        if self.selected is not None and 0 <= self.selected < len(self.shapes):
-            del self.shapes[self.selected]
+        if self.selected is not None and 0 <= self.selected < len(self._vis_idx):
+            idx = self._vis_idx[self.selected]
+            del self.shapes[idx]
             self.selected = None
+            self._rebuild_vis_idx()
             self._render()
             self._refresh_box_list()
 
@@ -419,6 +597,8 @@ class ReviewTab(ttk.Frame):
     def _apply_reannotate(self, anns):
         self.shapes = [{"name": a["name"], "bbox": a["bbox"]} for a in anns]
         self.selected = None
+        self._collect_cats()
+        self._rebuild_vis_idx()
         self._render()
         self._refresh_box_list()
         self.status_var.set(f"重新标注完成，共 {len(self.shapes)} 个目标")

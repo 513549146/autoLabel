@@ -26,3 +26,7 @@ venv/
 # 临时文件
 *.part
 _tmp_train/
+
+# PyInstaller 打包产物
+build/
+dist/
