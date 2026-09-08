@@ -7,6 +7,7 @@ from tkinter.scrolledtext import ScrolledText
 
 import config
 import core
+from gui.ios_widgets import IOSButton, IOSPanel
 
 
 DETECTOR_OPTIONS = {
@@ -16,11 +17,11 @@ DETECTOR_OPTIONS = {
 }
 
 
-class AutoTab(ttk.Frame):
+class AutoTab(tk.Frame):
     """自动标注页：批量预标注"""
 
     def __init__(self, parent, app):
-        super().__init__(parent, padding=12)
+        super().__init__(parent, bg="#f5f6f8", padx=22, pady=22)
         self.app = app
         self.stop_flag = threading.Event()
         self.worker_thread = None
@@ -28,51 +29,87 @@ class AutoTab(ttk.Frame):
         self._build_ui()
 
     def _build_ui(self):
-        self.columnconfigure(1, weight=1)
+        header = tk.Frame(self, bg="#f5f6f8")
+        header.pack(fill=tk.X, pady=(0, 18))
+        tk.Label(header, text="自动标注", bg="#f5f6f8", fg="#1c1c1e", font=("Microsoft YaHei UI", 20, "bold")).pack(anchor=tk.W)
+        tk.Label(header, text="选择项目图片，生成初始标注后自动进入待审核队列。", bg="#f5f6f8", fg="#6e7280",
+                 font=("Microsoft YaHei UI", 10)).pack(anchor=tk.W, pady=(4, 0))
+        tk.Label(header, text="流程 1 / 4", bg="#eaf3ff", fg="#007aff", padx=10, pady=5,
+                 font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.RIGHT, anchor=tk.N, pady=(4, 0))
 
-        ttk.Label(self, text="输入目录:").grid(row=0, column=0, sticky=tk.W, pady=4)
+        form_surface = IOSPanel(self, height=206, radius=16, canvas_bg="#f5f6f8")
+        form_surface.pack(fill=tk.X)
+        form = form_surface.content
+        form.configure(padx=8, pady=8)
+        form.columnconfigure(1, weight=1)
+        tk.Label(form, text="项目数据", bg="#ffffff", fg="#1c1c1e", font=("Microsoft YaHei UI", 13, "bold")).grid(
+            row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 2))
+        tk.Label(form, text="图片与标注文件始终保存在当前项目内。", bg="#ffffff", fg="#8e8e93", font=("Microsoft YaHei UI", 9)).grid(
+            row=1, column=0, columnspan=3, sticky=tk.W, pady=(0, 12))
+
+        tk.Label(form, text="图片目录", bg="#ffffff", fg="#535763", font=("Microsoft YaHei UI", 10)).grid(row=2, column=0, sticky=tk.W, pady=7)
         self.input_var = tk.StringVar(value=config.INPUT_DIR)
-        ttk.Entry(self, textvariable=self.input_var).grid(row=0, column=1, sticky=tk.EW, padx=4)
-        ttk.Button(self, text="浏览...", command=self._browse_input).grid(row=0, column=2)
+        ttk.Entry(form, textvariable=self.input_var).grid(row=2, column=1, sticky=tk.NSEW, padx=(16, 8))
+        IOSButton(form, text="浏览", command=self._browse_input, kind="secondary", width=76, height=38, bg="#ffffff").grid(row=2, column=2, sticky=tk.NS)
 
-        ttk.Label(self, text="输出目录:").grid(row=1, column=0, sticky=tk.W, pady=4)
+        tk.Label(form, text="标注目录", bg="#ffffff", fg="#535763", font=("Microsoft YaHei UI", 10)).grid(row=3, column=0, sticky=tk.W, pady=7)
         self.output_var = tk.StringVar(value=config.OUTPUT_DIR)
-        ttk.Entry(self, textvariable=self.output_var).grid(row=1, column=1, sticky=tk.EW, padx=4)
-        ttk.Button(self, text="浏览...", command=self._browse_output).grid(row=1, column=2)
+        ttk.Entry(form, textvariable=self.output_var).grid(row=3, column=1, sticky=tk.NSEW, padx=(16, 8))
+        IOSButton(form, text="浏览", command=self._browse_output, kind="secondary", width=76, height=38, bg="#ffffff").grid(row=3, column=2, sticky=tk.NS)
 
-        ttk.Label(self, text="检测模型:").grid(row=2, column=0, sticky=tk.W, pady=4)
+        config_surface = IOSPanel(self, height=244, radius=16, canvas_bg="#f5f6f8")
+        config_surface.pack(fill=tk.X, pady=(12, 0))
+        config_card = config_surface.content
+        config_card.configure(padx=8, pady=8)
+        config_card.columnconfigure(1, weight=1)
+        tk.Label(config_card, text="标注配置", bg="#ffffff", fg="#1c1c1e", font=("Microsoft YaHei UI", 13, "bold")).grid(
+            row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 2))
+        tk.Label(config_card, text="先生成候选框，审核阶段可继续修正。", bg="#ffffff", fg="#8e8e93", font=("Microsoft YaHei UI", 9)).grid(
+            row=1, column=0, columnspan=3, sticky=tk.W, pady=(0, 12))
+        tk.Label(config_card, text="检测模型", bg="#ffffff", fg="#535763", font=("Microsoft YaHei UI", 10)).grid(row=2, column=0, sticky=tk.W, pady=7)
         self.detector_var = tk.StringVar(value=DETECTOR_OPTIONS.get(config.DETECTOR, DETECTOR_OPTIONS["gd15"]))
-        self.detector_combo = ttk.Combobox(self, textvariable=self.detector_var,
+        self.detector_combo = ttk.Combobox(config_card, textvariable=self.detector_var,
                                            values=list(DETECTOR_OPTIONS.values()), state="readonly")
-        self.detector_combo.grid(row=2, column=1, sticky=tk.EW, padx=4, columnspan=2)
+        self.detector_combo.grid(row=2, column=1, sticky=tk.EW, padx=(16, 0), columnspan=2)
         self.detector_combo.bind("<<ComboboxSelected>>", self._on_detector_change)
 
-        ttk.Label(self, text="提示词:").grid(row=3, column=0, sticky=tk.W, pady=4)
+        tk.Label(config_card, text="提示词", bg="#ffffff", fg="#535763", font=("Microsoft YaHei UI", 10)).grid(row=3, column=0, sticky=tk.W, pady=7)
         self.prompt_var = tk.StringVar(value=config.PROMPT)
-        ttk.Entry(self, textvariable=self.prompt_var).grid(row=3, column=1, sticky=tk.EW, padx=4, columnspan=2)
+        ttk.Entry(config_card, textvariable=self.prompt_var).grid(row=3, column=1, sticky=tk.NSEW, padx=(16, 8))
+        IOSButton(config_card, text="项目类别", command=self._manage_categories, kind="secondary", width=88, height=38, bg="#ffffff").grid(row=3, column=2, sticky=tk.NS)
 
-        thr_frame = ttk.Frame(self)
-        thr_frame.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=4)
-        ttk.Label(thr_frame, text="框阈值:").pack(side=tk.LEFT)
+        thr_frame = tk.Frame(config_card, bg="#ffffff")
+        thr_frame.grid(row=4, column=1, columnspan=2, sticky=tk.W, padx=(16, 0), pady=(10, 0))
+        tk.Label(thr_frame, text="框阈值", bg="#ffffff", fg="#535763").pack(side=tk.LEFT)
         self.box_thr_var = tk.StringVar(value=str(config.BOX_THRESHOLD))
         ttk.Entry(thr_frame, textvariable=self.box_thr_var, width=8).pack(side=tk.LEFT, padx=(0, 16))
-        ttk.Label(thr_frame, text="文本阈值:").pack(side=tk.LEFT)
+        tk.Label(thr_frame, text="文本阈值", bg="#ffffff", fg="#535763").pack(side=tk.LEFT)
         self.text_thr_var = tk.StringVar(value=str(config.TEXT_THRESHOLD))
         ttk.Entry(thr_frame, textvariable=self.text_thr_var, width=8).pack(side=tk.LEFT)
 
-        btn_frame = ttk.Frame(self)
-        btn_frame.grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=6)
-        self.start_btn = ttk.Button(btn_frame, text="开始标注", command=self._start)
+        action_card = tk.Frame(self, bg="#f5f6f8")
+        action_card.pack(fill=tk.X, pady=(16, 10))
+        self.start_btn = IOSButton(action_card, text="开始自动标注", command=self._start, kind="primary", width=140, height=44, bg="#f5f6f8")
         self.start_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.stop_btn = ttk.Button(btn_frame, text="停止", command=self._stop, state=tk.DISABLED)
+        self.stop_btn = IOSButton(action_card, text="停止", command=self._stop, kind="secondary", width=76, height=44, bg="#f5f6f8", state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT)
+        tk.Label(action_card, text="完成后将自动进入“待审核”队列", bg="#f5f6f8", fg="#8e8e93",
+                 font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=12)
 
         self.progress = ttk.Progressbar(self, mode="determinate", maximum=100)
-        self.progress.grid(row=6, column=0, columnspan=3, sticky=tk.EW, pady=6)
+        self.progress.pack(fill=tk.X, pady=(0, 10))
 
-        self.log_text = ScrolledText(self, height=18, state=tk.DISABLED)
-        self.log_text.grid(row=7, column=0, columnspan=3, sticky=tk.NSEW)
-        self.rowconfigure(7, weight=1)
+        log_surface = IOSPanel(self, radius=16, canvas_bg="#f5f6f8")
+        log_surface.pack(fill=tk.BOTH, expand=True)
+        log_card = log_surface.content
+        log_card.configure(padx=4, pady=4)
+        tk.Label(log_card, text="运行记录", bg="#ffffff", fg="#1c1c1e", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor=tk.W, pady=(0, 8))
+        self.log_text = ScrolledText(
+            log_card, height=12, state=tk.DISABLED, bg="#fbfbfc", fg="#3d424d",
+            insertbackground="#1c1c1e", relief=tk.FLAT, highlightthickness=1,
+            highlightbackground="#e1e3e8", font=("Consolas", 10),
+        )
+        self.log_text.pack(fill=tk.BOTH, expand=True)
 
     def _on_detector_change(self, event=None):
         display = self.detector_var.get()
@@ -88,6 +125,16 @@ class AutoTab(ttk.Frame):
         path = filedialog.askdirectory(title="选择输出标注目录")
         if path:
             self.output_var.set(path)
+
+    def _manage_categories(self):
+        self.app.configure_project(self.input_var.get().strip(), self.output_var.get().strip())
+
+        def on_saved(categories):
+            if categories:
+                self.prompt_var.set(" . ".join(categories))
+            self._log(f"项目类别已更新：{', '.join(categories) if categories else '无'}")
+
+        self.app.open_category_manager(on_saved)
 
     def _log(self, text):
         self.msg_queue.put(("log", text))
@@ -113,6 +160,11 @@ class AutoTab(ttk.Frame):
             messagebox.showerror("参数错误", "提示词不能为空")
             return
 
+        project = self.app.configure_project(input_dir, output_dir)
+        prompt_categories = core.parse_categories(prompt)
+        if not project.categories and prompt_categories:
+            project.set_categories(prompt_categories)
+
         self.stop_flag.clear()
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
@@ -130,6 +182,7 @@ class AutoTab(ttk.Frame):
         self._log("正在停止...")
 
     def _worker(self, input_dir, output_dir, prompt, box_thr, text_thr):
+        processed_files = []
         try:
             self._log("加载模型，请稍候...")
             self.app.ensure_model()
@@ -150,6 +203,7 @@ class AutoTab(ttk.Frame):
                 try:
                     annotations = core.auto_label(image_path, prompt, self.app.detector, box_thr, text_thr)
                     core.save_as_voc_xml(annotations, image_path, output_dir)
+                    processed_files.append(img_file)
                     self._log(f"[完成] {img_file}: {len(annotations)} 个目标")
                 except Exception as exc:
                     self._log(f"[失败] {img_file}: {exc}")
@@ -159,6 +213,8 @@ class AutoTab(ttk.Frame):
         except Exception as exc:
             self.msg_queue.put(("error", f"处理出错: {exc}"))
         finally:
+            if processed_files:
+                self.app.project.mark_batch_for_review(processed_files)
             self._log("处理结束")
             self.msg_queue.put(("done", None))
 
@@ -177,6 +233,11 @@ class AutoTab(ttk.Frame):
                 elif kind == "done":
                     self.start_btn.config(state=tk.NORMAL)
                     self.stop_btn.config(state=tk.DISABLED)
+                    # The next stage is ready immediately after a batch: review reads
+                    # the same project folders and starts in the pending-review queue.
+                    self.app.review_tab.open_project(self.input_var.get().strip(), self.output_var.get().strip())
+                    self.app.refresh_workspace()
+                    self.app.show_page("review")
         except queue.Empty:
             pass
         self.after(100, self._poll_queue)

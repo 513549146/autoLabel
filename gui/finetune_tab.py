@@ -9,6 +9,7 @@ from tkinter.scrolledtext import ScrolledText
 
 import config
 import finetune
+from gui.ios_widgets import IOSButton, IOSPanel
 
 
 MODEL_CHOICES = [
@@ -21,7 +22,7 @@ class FineTuneTab(ttk.Frame):
     """微调页：可视化导出 VOC -> YOLO 训练集，并微调训练"""
 
     def __init__(self, parent, app):
-        super().__init__(parent, padding=12)
+        super().__init__(parent, padding=22)
         self.app = app
         self.worker_thread = None
         self.stop_flag = threading.Event()
@@ -30,78 +31,101 @@ class FineTuneTab(ttk.Frame):
         self.after(100, self._poll_queue)
 
     def _build_ui(self):
+        header = tk.Frame(self, bg="#f5f6f8")
+        header.pack(fill=tk.X, pady=(0, 18))
+        tk.Label(header, text="训练集导出", bg="#f5f6f8", fg="#1c1c1e", font=("Microsoft YaHei UI", 20, "bold")).pack(anchor=tk.W)
+        tk.Label(header, text="仅导出已通过审核的结果，然后可直接启动 YOLO 微调训练。", bg="#f5f6f8", fg="#6e7280", font=("Microsoft YaHei UI", 10)).pack(anchor=tk.W, pady=(4, 0))
+        tk.Label(header, text="流程 4 / 4", bg="#eaf3ff", fg="#007aff", padx=10, pady=5, font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.RIGHT, anchor=tk.N, pady=(4, 0))
+
+        stages = tk.Frame(self, bg="#f5f6f8", height=386)
+        stages.pack(fill=tk.X, pady=(0, 12))
+        stages.pack_propagate(False)
+
         # ---- 导出 ----
-        exp = ttk.LabelFrame(self, text="1. 导出数据集（VOC → YOLO）", padding=8)
-        exp.pack(fill=tk.X, pady=(0, 8))
+        exp_surface = IOSPanel(stages, width=520, height=386, radius=16, canvas_bg="#f5f6f8")
+        exp_surface.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
+        exp = exp_surface.content
+        exp.configure(padx=8, pady=8)
         exp.columnconfigure(1, weight=1)
+        tk.Label(exp, text="1 · 导出数据集", bg="#ffffff", fg="#1c1c1e", font=("Microsoft YaHei UI", 13, "bold")).grid(row=0, column=0, columnspan=3, sticky=tk.W)
+        tk.Label(exp, text="将审核通过的 VOC 标注整理为 YOLO 训练集。", bg="#ffffff", fg="#8e8e93", font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(2, 12))
 
-        ttk.Label(exp, text="图片目录:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        tk.Label(exp, text="图片目录", bg="#ffffff", fg="#535763").grid(row=2, column=0, sticky=tk.W, pady=7)
         self.exp_images_var = tk.StringVar(value=config.INPUT_DIR)
-        ttk.Entry(exp, textvariable=self.exp_images_var).grid(row=0, column=1, sticky=tk.EW, padx=4)
-        ttk.Button(exp, text="浏览", command=lambda: self._browse_dir(self.exp_images_var)).grid(row=0, column=2)
+        ttk.Entry(exp, textvariable=self.exp_images_var).grid(row=2, column=1, sticky=tk.NSEW, padx=(16, 8))
+        IOSButton(exp, text="浏览", command=lambda: self._browse_dir(self.exp_images_var), width=76, height=38, bg="#ffffff").grid(row=2, column=2, sticky=tk.NS)
 
-        ttk.Label(exp, text="标注目录:").grid(row=1, column=0, sticky=tk.W, pady=3)
+        tk.Label(exp, text="标注目录", bg="#ffffff", fg="#535763").grid(row=3, column=0, sticky=tk.W, pady=7)
         self.exp_ann_var = tk.StringVar(value=config.OUTPUT_DIR)
-        ttk.Entry(exp, textvariable=self.exp_ann_var).grid(row=1, column=1, sticky=tk.EW, padx=4)
-        ttk.Button(exp, text="浏览", command=lambda: self._browse_dir(self.exp_ann_var)).grid(row=1, column=2)
+        ttk.Entry(exp, textvariable=self.exp_ann_var).grid(row=3, column=1, sticky=tk.NSEW, padx=(16, 8))
+        IOSButton(exp, text="浏览", command=lambda: self._browse_dir(self.exp_ann_var), width=76, height=38, bg="#ffffff").grid(row=3, column=2, sticky=tk.NS)
 
-        ttk.Label(exp, text="输出目录:").grid(row=2, column=0, sticky=tk.W, pady=3)
+        tk.Label(exp, text="输出目录", bg="#ffffff", fg="#535763").grid(row=4, column=0, sticky=tk.W, pady=7)
         self.exp_out_var = tk.StringVar(value=os.path.join(config.BASE_DIR, "yolo_dataset"))
-        ttk.Entry(exp, textvariable=self.exp_out_var).grid(row=2, column=1, sticky=tk.EW, padx=4)
-        ttk.Button(exp, text="浏览", command=lambda: self._browse_dir(self.exp_out_var)).grid(row=2, column=2)
+        ttk.Entry(exp, textvariable=self.exp_out_var).grid(row=4, column=1, sticky=tk.NSEW, padx=(16, 8))
+        IOSButton(exp, text="浏览", command=lambda: self._browse_dir(self.exp_out_var), width=76, height=38, bg="#ffffff").grid(row=4, column=2, sticky=tk.NS)
 
-        ttk.Label(exp, text="验证集比例:").grid(row=3, column=0, sticky=tk.W, pady=3)
+        tk.Label(exp, text="验证集比例", bg="#ffffff", fg="#535763").grid(row=5, column=0, sticky=tk.W, pady=(10, 0))
         self.exp_val_var = tk.StringVar(value="0.2")
-        ttk.Entry(exp, textvariable=self.exp_val_var, width=8).grid(row=3, column=1, sticky=tk.W, padx=4)
-        ttk.Button(exp, text="导出数据集", command=self._start_export).grid(row=3, column=2)
+        ttk.Entry(exp, textvariable=self.exp_val_var, width=8).grid(row=5, column=1, sticky=tk.W, padx=(16, 0), pady=(10, 0))
+        IOSButton(exp, text="导出数据集", command=self._start_export, kind="primary", width=108, height=40, bg="#ffffff").grid(row=5, column=2, sticky=tk.NS, pady=(8, 0))
 
         # ---- 训练 ----
-        tr = ttk.LabelFrame(self, text="2. 微调训练（YOLO）", padding=8)
-        tr.pack(fill=tk.X, pady=(0, 8))
+        tr_surface = IOSPanel(stages, width=520, height=386, radius=16, canvas_bg="#f5f6f8")
+        tr_surface.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0))
+        tr = tr_surface.content
+        tr.configure(padx=8, pady=8)
         tr.columnconfigure(1, weight=1)
+        tk.Label(tr, text="2 · 微调训练", bg="#ffffff", fg="#1c1c1e", font=("Microsoft YaHei UI", 13, "bold")).grid(row=0, column=0, columnspan=3, sticky=tk.W)
+        tk.Label(tr, text="选择模型与训练参数；训练完成后可回到自动标注页切换 YOLO 模型。", bg="#ffffff", fg="#8e8e93", font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(2, 12))
 
-        ttk.Label(tr, text="数据配置:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        tk.Label(tr, text="数据配置", bg="#ffffff", fg="#535763").grid(row=2, column=0, sticky=tk.W, pady=7)
         self.train_data_var = tk.StringVar(value=os.path.join(config.BASE_DIR, "yolo_dataset", "dataset.yaml"))
-        ttk.Entry(tr, textvariable=self.train_data_var).grid(row=0, column=1, sticky=tk.EW, padx=4)
-        ttk.Button(tr, text="浏览", command=self._browse_data).grid(row=0, column=2)
+        ttk.Entry(tr, textvariable=self.train_data_var).grid(row=2, column=1, sticky=tk.NSEW, padx=(16, 8))
+        IOSButton(tr, text="浏览", command=self._browse_data, width=76, height=38, bg="#ffffff").grid(row=2, column=2, sticky=tk.NS)
 
-        ttk.Label(tr, text="预训练模型:").grid(row=1, column=0, sticky=tk.W, pady=3)
+        tk.Label(tr, text="预训练模型", bg="#ffffff", fg="#535763").grid(row=3, column=0, sticky=tk.W, pady=7)
         self.train_model_var = tk.StringVar(value="yolov8s.pt")
         ttk.Combobox(tr, textvariable=self.train_model_var, values=MODEL_CHOICES, state="readonly", width=12).grid(
-            row=1, column=1, sticky=tk.W, padx=4)
+            row=3, column=1, sticky=tk.W, padx=(16, 0))
 
-        ttk.Label(tr, text="轮数:").grid(row=2, column=0, sticky=tk.W, pady=3)
+        tk.Label(tr, text="轮数", bg="#ffffff", fg="#535763").grid(row=4, column=0, sticky=tk.W, pady=7)
         self.train_epochs_var = tk.StringVar(value="100")
-        ttk.Entry(tr, textvariable=self.train_epochs_var, width=8).grid(row=2, column=1, sticky=tk.W, padx=4)
+        ttk.Entry(tr, textvariable=self.train_epochs_var, width=8).grid(row=4, column=1, sticky=tk.W, padx=(16, 0))
 
-        ttk.Label(tr, text="图像尺寸:").grid(row=3, column=0, sticky=tk.W, pady=3)
+        tk.Label(tr, text="图像尺寸", bg="#ffffff", fg="#535763").grid(row=5, column=0, sticky=tk.W, pady=7)
         self.train_imgsz_var = tk.StringVar(value="640")
-        ttk.Entry(tr, textvariable=self.train_imgsz_var, width=8).grid(row=3, column=1, sticky=tk.W, padx=4)
+        ttk.Entry(tr, textvariable=self.train_imgsz_var, width=8).grid(row=5, column=1, sticky=tk.W, padx=(16, 0))
 
-        ttk.Label(tr, text="批量:").grid(row=4, column=0, sticky=tk.W, pady=3)
+        tk.Label(tr, text="批量", bg="#ffffff", fg="#535763").grid(row=6, column=0, sticky=tk.W, pady=7)
         self.train_batch_var = tk.StringVar(value="16")
-        ttk.Entry(tr, textvariable=self.train_batch_var, width=8).grid(row=4, column=1, sticky=tk.W, padx=4)
+        ttk.Entry(tr, textvariable=self.train_batch_var, width=8).grid(row=6, column=1, sticky=tk.W, padx=(16, 0))
 
         self.auto_copy_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(tr, text="训练完成后自动复制 best.pt 到 weights/yolo_best.pt",
-                        variable=self.auto_copy_var).grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=4)
+                        variable=self.auto_copy_var).grid(row=7, column=0, columnspan=3, sticky=tk.W, pady=(10, 4))
 
-        btn = ttk.Frame(tr)
-        btn.grid(row=6, column=0, columnspan=3, sticky=tk.W, pady=2)
-        self.train_btn = ttk.Button(btn, text="开始训练", command=self._start_train)
+        btn = tk.Frame(tr, bg="#ffffff")
+        btn.grid(row=8, column=0, columnspan=3, sticky=tk.W, pady=(6, 0))
+        self.train_btn = IOSButton(btn, text="开始训练", command=self._start_train, kind="primary", width=110, height=42, bg="#ffffff")
         self.train_btn.pack(side=tk.LEFT, padx=(0, 8))
-        self.stop_btn = ttk.Button(btn, text="停止", command=self._stop, state=tk.DISABLED)
+        self.stop_btn = IOSButton(btn, text="停止", command=self._stop, width=76, height=42, bg="#ffffff", state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT)
 
         # ---- 日志 ----
-        logf = ttk.LabelFrame(self, text="日志", padding=8)
-        logf.pack(fill=tk.BOTH, expand=True)
-        self.log_text = ScrolledText(logf, state=tk.DISABLED)
+        log_surface = IOSPanel(self, radius=16, canvas_bg="#f5f6f8")
+        log_surface.pack(fill=tk.BOTH, expand=True)
+        logf = log_surface.content
+        logf.configure(padx=4, pady=4)
+        tk.Label(logf, text="运行记录", bg="#ffffff", fg="#1c1c1e", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor=tk.W, pady=(0, 8))
+        self.log_text = ScrolledText(
+            logf, state=tk.DISABLED, bg="#ffffff", fg="#3d424d", insertbackground="#1c1c1e",
+            relief=tk.FLAT, highlightthickness=1, highlightbackground="#e1e3e8", font=("Consolas", 10),
+        )
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
-        hint = ("流程：自动标注+人工审核修正 VOC → 上一步「导出数据集」→ 「开始训练」→ 训练后自动设为 YOLO 模型\n"
-                "训练会自动下载预训练权重（首次联网）；要求已安装 ultralytics（pip install ultralytics）")
-        ttk.Label(self, text=hint, foreground="gray").pack(anchor=tk.W, pady=(4, 0))
+        hint = "首次训练会下载预训练权重；请确保已安装 ultralytics。"
+        tk.Label(self, text=hint, bg="#f5f6f8", fg="#8e8e93", font=("Microsoft YaHei UI", 9)).pack(anchor=tk.W, pady=(8, 0))
 
     def _browse_dir(self, var):
         path = filedialog.askdirectory()

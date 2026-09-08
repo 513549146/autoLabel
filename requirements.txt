@@ -10,3 +10,4 @@ pillow
 supervision>=0.22.0
 pycocotools
 ultralytics
+PySide6
