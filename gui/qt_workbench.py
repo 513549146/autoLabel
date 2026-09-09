@@ -141,7 +141,7 @@ def apply_app_style(app: QApplication):
         QProgressBar#reviewProgress {{ height: 4px; min-height: 4px; max-height: 4px; border-radius: 2px; }}
         QProgressBar#reviewProgress::chunk {{ border-radius: 2px; }}
         QFrame#paging {{ background: #FFFFFF; border: 1px solid {COLORS['line']}; border-radius: 11px; }}
-        QToolButton#pagingChevron {{ background: transparent; border: 0; border-radius: 10px; font-size: 31px; font-weight: 300; color: #23272F; padding: 0 0 2px 0; }}
+        QToolButton#pagingChevron {{ background: transparent; border: 0; border-radius: 10px; font-family: 'Segoe UI Symbol', 'Microsoft YaHei UI'; font-size: 22px; font-weight: 600; color: #23272F; padding: 0; margin: 0; }}
         QToolButton#pagingChevron:hover {{ background: #F3F5F8; }}
         QLabel#pagingPosition {{ border-left: 1px solid {COLORS['line']}; border-right: 1px solid {COLORS['line']}; font-size: 16px; padding: 0; }}
     """)
