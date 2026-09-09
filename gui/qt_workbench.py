@@ -144,6 +144,10 @@ def apply_app_style(app: QApplication):
         QToolButton#pagingChevron {{ background: transparent; border: 0; border-radius: 10px; font-family: 'Segoe UI Symbol', 'Microsoft YaHei UI'; font-size: 22px; font-weight: 600; color: #23272F; padding: 0; margin: 0; }}
         QToolButton#pagingChevron:hover {{ background: #F3F5F8; }}
         QLabel#pagingPosition {{ border-left: 1px solid {COLORS['line']}; border-right: 1px solid {COLORS['line']}; font-size: 16px; padding: 0; }}
+        QFrame#annotationDrawer {{ background: rgba(255,255,255,248); border: 1px solid #DCE0E6; border-radius: 14px; }}
+        QToolButton#annotationRow {{ background: #FFFFFF; border: 1px solid #E7E9ED; border-radius: 10px; text-align: left; padding: 7px 10px; color: #2E3138; }}
+        QToolButton#annotationRow:hover {{ background: #F6F9FE; border-color: #CFE1FF; }}
+        QToolButton#annotationRow:checked {{ background: #EAF3FF; border-color: #0A74FF; font-weight: 700; }}
     """)
 
 
@@ -225,6 +229,7 @@ class ImageCanvas(QWidget):
         self.selected_index = -1
         self.default_label = "object"
         self.visible_categories: set[str] | None = None
+        self.hidden_indices: set[int] = set()
         self._drag_point = None
         self._drag_origin = None
         self._drag_shape = None
@@ -252,6 +257,7 @@ class ImageCanvas(QWidget):
         self._pixmap = QPixmap(path) if path and os.path.isfile(path) else QPixmap()
         self._display_cache = QPixmap(); self._display_cache_key = None
         self.zoom = 1.0; self.pan = QPointF(); self.selected_index = -1
+        self.hidden_indices.clear()
         self._history.clear(); self._redo.clear()
         self.update()
 
@@ -271,6 +277,17 @@ class ImageCanvas(QWidget):
             if self.shapes[self.selected_index].get("name") not in self.visible_categories:
                 self._set_selected(-1)
         self.update()
+
+    def set_hidden_indices(self, indices):
+        self.hidden_indices = {int(index) for index in indices if 0 <= int(index) < len(self.shapes)}
+        if self.selected_index in self.hidden_indices:
+            self._set_selected(-1)
+        self.update()
+
+    def _is_visible(self, index: int):
+        if index in self.hidden_indices:
+            return False
+        return self.visible_categories is None or self.shapes[index].get("name") in self.visible_categories
 
     def _geometry(self):
         if self._pixmap.isNull():
@@ -295,7 +312,7 @@ class ImageCanvas(QWidget):
 
     def _shape_index_at(self, point: QPointF):
         for index in range(len(self.shapes) - 1, -1, -1):
-            if self.visible_categories is not None and self.shapes[index].get("name") not in self.visible_categories:
+            if not self._is_visible(index):
                 continue
             x1, y1, x2, y2 = self.shapes[index]["bbox"]
             if min(x1, x2) <= point.x() <= max(x1, x2) and min(y1, y2) <= point.y() <= max(y1, y2):
@@ -348,6 +365,17 @@ class ImageCanvas(QWidget):
             self.selected_index = index
             self.selection_changed.emit(index)
             self.update()
+
+    def focus_shape(self, index: int):
+        """Select one visible box and bring its centre into the canvas viewport."""
+        if not 0 <= index < len(self.shapes) or not self._is_visible(index):
+            return False
+        x1, y1, x2, y2 = self._shape_rect(index)
+        current = self._to_canvas(QPointF((x1 + x2) / 2, (y1 + y2) / 2))
+        self.pan += QPointF(self.rect().center()) - current
+        self._set_selected(index)
+        self.update()
+        return True
 
     def _commit(self, before):
         if before == self.shapes:
@@ -410,7 +438,7 @@ class ImageCanvas(QWidget):
             self._display_cache_key = cache_key
         painter.drawPixmap(target.topLeft(), self._display_cache)
         for index, shape in enumerate(self.shapes):
-            if self.visible_categories is not None and shape.get("name") not in self.visible_categories:
+            if not self._is_visible(index):
                 continue
             x1, y1, x2, y2 = shape.get("bbox", (0, 0, 0, 0))
             color = self.color_for_label(shape.get("name", "object"))
@@ -849,8 +877,10 @@ class ReviewPage(QWidget):
         redo = tool(bar, sprite_icon("redo"), "重做\n快捷键：Ctrl+Shift+Z"); redo.clicked.connect(self.redo); tools.addWidget(redo)
         remove = tool(bar, sprite_icon("delete"), "删除选中标注\n快捷键：Delete"); remove.clicked.connect(self.delete_selected); tools.addWidget(remove)
         tools.addSpacing(8); tools.addWidget(label("滚轮缩放   双击适应   Ctrl+S 保存   Ctrl+Z 撤销   Del 删除", "muted")); tools.addStretch()
+        self.list_button = button("标注清单"); self.list_button.setCheckable(True); self.list_button.setToolTip("打开标注清单\n快捷键：L"); self.list_button.clicked.connect(self.toggle_annotation_drawer); tools.addWidget(self.list_button)
         save = button("保存", primary=True); save.setToolTip("保存标注\n快捷键：Ctrl+S"); save.clicked.connect(self.save); tools.addWidget(save); root.addWidget(bar)
-        work = QHBoxLayout(); work.setSpacing(14); canvas_card = card(); canvas_layout = QVBoxLayout(canvas_card); canvas_layout.setContentsMargins(10, 10, 10, 10); self.canvas = ImageCanvas(); self.canvas.shapes_changed.connect(self._canvas_changed); self.canvas.selection_changed.connect(self._selection_changed); self.canvas.box_created.connect(self._new_box_created); self.pan_tool.setChecked(True); canvas_layout.addWidget(self.canvas); work.addWidget(canvas_card, 1)
+        work = QHBoxLayout(); work.setSpacing(14); self.canvas_card = card(); canvas_layout = QVBoxLayout(self.canvas_card); canvas_layout.setContentsMargins(10, 10, 10, 10); self.canvas = ImageCanvas(); self.canvas.shapes_changed.connect(self._canvas_changed); self.canvas.selection_changed.connect(self._selection_changed); self.canvas.box_created.connect(self._new_box_created); self.pan_tool.setChecked(True); canvas_layout.addWidget(self.canvas); work.addWidget(self.canvas_card, 1)
+        self._build_annotation_drawer()
         inspector = card(); inspector.setFixedWidth(280); form = QVBoxLayout(inspector); form.setContentsMargins(20, 20, 20, 20); form.setSpacing(10); form.addWidget(label("标签", "section")); form.addSpacing(8)
         form.addWidget(label("显示类别（可多选）", "muted")); self.filter_host = QWidget(); self.filter_layout = QVBoxLayout(self.filter_host); self.filter_layout.setContentsMargins(0, 0, 0, 0); self.filter_layout.setSpacing(4); self.filter_scroll = QScrollArea(); self.filter_scroll.setWidgetResizable(True); self.filter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff); self.filter_scroll.setFixedHeight(104); self.filter_scroll.setWidget(self.filter_host); form.addWidget(self.filter_scroll)
         form.addSpacing(8); form.addWidget(label("选中框标签", "muted")); self.category = QLineEdit(); self.category.setPlaceholderText("选择框后可修改标签名"); self.category.setEnabled(False); form.addWidget(self.category); form.addSpacing(8); form.addWidget(label("状态", "muted"))
@@ -867,11 +897,103 @@ class ReviewPage(QWidget):
         QShortcut(QKeySequence("H"), self, activated=lambda: self.pan_tool.setChecked(True))
         QShortcut(QKeySequence("V"), self, activated=lambda: self.select_tool.setChecked(True))
         QShortcut(QKeySequence("R"), self, activated=lambda: self.box_tool.setChecked(True))
+        QShortcut(QKeySequence("L"), self, activated=self.toggle_annotation_drawer)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save)
         self.category.editingFinished.connect(self._apply_selected_category)
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self.undo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self.redo)
         QShortcut(QKeySequence("Delete"), self, activated=self.delete_selected)
+
+    def _build_annotation_drawer(self):
+        """Build an overlay list so dense images never squeeze the canvas."""
+        self.annotation_drawer = QFrame(self.canvas_card)
+        self.annotation_drawer.setObjectName("annotationDrawer")
+        self.annotation_drawer.setFixedWidth(360)
+        self.annotation_drawer.setVisible(False)
+        drawer = QVBoxLayout(self.annotation_drawer); drawer.setContentsMargins(16, 16, 16, 16); drawer.setSpacing(10)
+        header = QHBoxLayout(); header.addWidget(label("标注清单", "section")); self.drawer_count = label("0 个框", "muted"); header.addWidget(self.drawer_count); header.addStretch()
+        close = QToolButton(); close.setText("×"); close.setToolTip("关闭标注清单（L）"); close.setFixedSize(28, 28); close.setCursor(Qt.PointingHandCursor); close.setStyleSheet("border:0;border-radius:8px;font-size:20px;color:#555B66;"); close.clicked.connect(lambda: self.toggle_annotation_drawer(False)); header.addWidget(close); drawer.addLayout(header)
+        self.drawer_search = QLineEdit(); self.drawer_search.setPlaceholderText("搜索类别或框编号"); self.drawer_search.textChanged.connect(self._refresh_annotation_drawer); drawer.addWidget(self.drawer_search)
+        self.drawer_category = FlatComboBox(); self.drawer_category.currentIndexChanged.connect(self._refresh_annotation_drawer); drawer.addWidget(self.drawer_category)
+        self.drawer_scroll = QScrollArea(); self.drawer_scroll.setWidgetResizable(True); self.drawer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff); self.drawer_scroll.setStyleSheet("QScrollArea {border:0;background:transparent;} QScrollArea > QWidget > QWidget {background:transparent;}"); self.drawer_rows = QWidget(); self.drawer_rows.setStyleSheet("background:transparent;"); self.drawer_rows_layout = QVBoxLayout(self.drawer_rows); self.drawer_rows_layout.setContentsMargins(0, 0, 0, 0); self.drawer_rows_layout.setSpacing(7); self.drawer_scroll.setWidget(self.drawer_rows); drawer.addWidget(self.drawer_scroll, 1)
+        self.canvas_card.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if watched is getattr(self, "canvas_card", None) and event.type() == QEvent.Resize:
+            self._position_annotation_drawer()
+        return super().eventFilter(watched, event)
+
+    def _position_annotation_drawer(self):
+        if not self.annotation_drawer.isVisible():
+            return
+        margin = 12
+        width = min(360, max(260, self.canvas_card.width() - margin * 2))
+        height = max(180, self.canvas_card.height() - margin * 2)
+        self.annotation_drawer.setGeometry(self.canvas_card.width() - width - margin, margin, width, height)
+        self.annotation_drawer.raise_()
+
+    def toggle_annotation_drawer(self, checked=None):
+        visible = not self.annotation_drawer.isVisible() if checked is None else bool(checked)
+        self.annotation_drawer.setVisible(visible)
+        self.list_button.setChecked(visible)
+        if visible:
+            self._refresh_annotation_drawer()
+            self._position_annotation_drawer()
+
+    def _drawer_categories(self):
+        current = self.drawer_category.currentData()
+        categories = self._available_categories()
+        self.drawer_category.blockSignals(True); self.drawer_category.clear(); self.drawer_category.addItem("全部类别", "")
+        for name in categories:
+            self.drawer_category.addItem(name, name)
+        target = self.drawer_category.findData(current)
+        self.drawer_category.setCurrentIndex(target if target >= 0 else 0); self.drawer_category.blockSignals(False)
+
+    def _refresh_annotation_drawer(self):
+        if not hasattr(self, "annotation_drawer"):
+            return
+        self._drawer_categories()
+        query = self.drawer_search.text().strip().lower()
+        category = self.drawer_category.currentData() or ""
+        while self.drawer_rows_layout.count():
+            entry = self.drawer_rows_layout.takeAt(0); widget = entry.widget(); widget.deleteLater() if widget else None
+        shown = 0
+        for index, shape in enumerate(self.canvas.shapes):
+            name = str(shape.get("name", "object"))
+            if category and name != category:
+                continue
+            x1, y1, x2, y2 = self.canvas._shape_rect(index)
+            width, height = int(x2 - x1), int(y2 - y1)
+            searchable = f"{name} {index + 1} {x1} {y1} {width} {height}".lower()
+            if query and query not in searchable:
+                continue
+            row = QWidget(); row_layout = QHBoxLayout(row); row_layout.setContentsMargins(0, 0, 0, 0); row_layout.setSpacing(6)
+            item = QToolButton(); item.setObjectName("annotationRow"); item.setCheckable(True); item.setChecked(index == self.canvas.selected_index); item.setToolButtonStyle(Qt.ToolButtonTextOnly); item.setText(f"{name}   #{index + 1}\n{x1}, {y1}   ·   {width} × {height}"); item.setFixedHeight(54)
+            color = self.canvas.color_for_label(name).name(); item.setStyleSheet(f"QToolButton {{background:#FFFFFF; border:1px solid #E7E9ED; border-left:4px solid {color}; border-radius:10px; text-align:left; padding:7px 10px; color:#2E3138;}} QToolButton:hover {{background:#F6F9FE; border-color:#CFE1FF; border-left:4px solid {color};}} QToolButton:checked {{background:#EAF3FF; border-color:#0A74FF; border-left:4px solid {color}; font-weight:700;}}")
+            item.setToolTip("定位并选中此标注框"); item.clicked.connect(lambda checked=False, target=index: self._select_annotation_from_list(target)); row_layout.addWidget(item, 1)
+            visible = QCheckBox(); visible.setChecked(index not in self.canvas.hidden_indices); visible.setToolTip("在画布中显示此标注框"); visible.toggled.connect(lambda checked, target=index: self._set_annotation_visible(target, checked)); row_layout.addWidget(visible, 0, Qt.AlignVCenter)
+            self.drawer_rows_layout.addWidget(row); shown += 1
+        if not shown:
+            empty = label("没有匹配的标注框", "muted"); empty.setAlignment(Qt.AlignCenter); self.drawer_rows_layout.addWidget(empty)
+        self.drawer_rows_layout.addStretch()
+        self.drawer_count.setText(f"{len(self.canvas.shapes)} 个框 · 显示 {shown}")
+
+    def _set_annotation_visible(self, index: int, visible: bool):
+        hidden = set(self.canvas.hidden_indices)
+        hidden.discard(index) if visible else hidden.add(index)
+        self.canvas.set_hidden_indices(hidden)
+        self._refresh_annotation_drawer()
+
+    def _select_annotation_from_list(self, index: int):
+        if not 0 <= index < len(self.canvas.shapes):
+            return
+        name = self.canvas.shapes[index].get("name", "")
+        if name in self._filter_checks and not self._filter_checks[name].isChecked():
+            self._filter_checks[name].setChecked(True)
+        hidden = set(self.canvas.hidden_indices); hidden.discard(index); self.canvas.set_hidden_indices(hidden)
+        self.select_tool.setChecked(True)
+        self.canvas.focus_shape(index)
+        self._refresh_annotation_drawer()
 
     def refresh(self):
         self.files = self.window.project_images(STATUS_NEEDS_REVIEW); self.index = min(self.index, max(0, len(self.files) - 1)); self._load()
@@ -884,7 +1006,7 @@ class ReviewPage(QWidget):
         percent = round(current * 100 / total) if total else 0
         self.position.setText(f"{current} / {total}"); self.progress.setValue(percent); self.progress_text.setText(f"{percent}%")
         if not total:
-            self.canvas.set_content(None, []); return
+            self.canvas.set_content(None, []); self._refresh_annotation_drawer(); return
         for index, filename in enumerate(self.files):
             item = QToolButton(); item.setFixedSize(116, 74); item.setCheckable(True); item.setChecked(index == self.index); item.setIcon(QIcon(os.path.join(self.window.images_dir, filename))); item.setIconSize(QSize(108, 66)); item.setStyleSheet("QToolButton {border: 2px solid transparent; border-radius: 8px;} QToolButton:checked {border-color:#0A74FF;}")
             item.clicked.connect(lambda checked=False, target=index: self.select(target)); self.thumb_row.addWidget(item)
@@ -895,6 +1017,7 @@ class ReviewPage(QWidget):
         self.canvas.set_content(image_path, shapes)
         self.category.clear(); self.category.setEnabled(False)
         self._rebuild_category_filters()
+        self._refresh_annotation_drawer()
 
     def select(self, index: int): self.index = index; self._load()
     def move(self, delta: int):
@@ -934,6 +1057,7 @@ class ReviewPage(QWidget):
         self.canvas.set_default_label(name)
         self.canvas.apply_category(name)
         self._rebuild_category_filters({name for name, item in self._filter_checks.items() if item.isChecked()} | {name})
+        self._refresh_annotation_drawer()
 
     def _selection_changed(self, index: int):
         if 0 <= index < len(self.canvas.shapes):
@@ -941,6 +1065,7 @@ class ReviewPage(QWidget):
             self.category.setText(name); self.category.setEnabled(True)
         else:
             self.category.clear(); self.category.setEnabled(False)
+        self._refresh_annotation_drawer()
 
     def _new_box_created(self, index: int):
         categories = self._available_categories() or ["object"]
@@ -954,6 +1079,7 @@ class ReviewPage(QWidget):
 
     def _canvas_changed(self, _shapes):
         self.window.status_message("标注已修改，点击“保存”写入 XML")
+        self._refresh_annotation_drawer()
 
     def undo(self):
         self.window.status_message("已撤销上一步修改" if self.canvas.undo() else "没有可撤销的修改")
