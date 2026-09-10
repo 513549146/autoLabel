@@ -158,7 +158,7 @@ class ProjectStore:
     """SQLite-backed project state, stored as ``autolabel.db`` at the project root.
 
     VOC XML remains in ``annotations`` for portability; the database only owns
-    workflow data such as statuses, categories, and project paths.
+    workflow data such as statuses, categories, reviewer notes, and project paths.
     """
 
     def __init__(self, annotations_dir, images_dir=None, project_dir=None):
@@ -203,8 +203,13 @@ class ProjectStore:
                     CHECK (status IN ('unreviewed', 'needs_review', 'approved', 'skipped'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_image_statuses_status ON image_statuses(status);
+                CREATE TABLE IF NOT EXISTS image_notes (
+                    filename TEXT PRIMARY KEY,
+                    note TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
             """)
-            connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("schema_version", "1"))
+            connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("schema_version", "2"))
             if self.images_dir:
                 connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("images_dir", self.images_dir))
             connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("annotations_dir", self.annotations_dir))
@@ -262,6 +267,21 @@ class ProjectStore:
                 "INSERT INTO image_statuses(filename, status, updated_at) VALUES (?, ?, ?) "
                 "ON CONFLICT(filename) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at",
                 (filename, status, _now()),
+            )
+
+    def note_for(self, filename):
+        """Return the reviewer note for an image, or an empty string."""
+        with self._connect() as connection:
+            row = connection.execute("SELECT note FROM image_notes WHERE filename = ?", (filename,)).fetchone()
+        return row["note"] if row else ""
+
+    def set_note(self, filename, note):
+        """Persist the note independently from the portable annotation XML."""
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO image_notes(filename, note, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(filename) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at",
+                (filename, str(note or ""), _now()),
             )
 
     def mark_batch_for_review(self, filenames):

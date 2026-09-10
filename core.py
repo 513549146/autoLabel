@@ -246,6 +246,31 @@ def save_as_voc_xml(annotations, image_path, output_dir):
         ET.SubElement(obj, "truncated").text = "0"
         ET.SubElement(obj, "difficult").text = "0"
 
+        # ``score`` and ``polygon`` are small VOC extensions.  Readers that only
+        # understand VOC bounding boxes keep working; autoLabel can retain model
+        # confidence and editable polygon geometry across review sessions.
+        score = ann.get("score")
+        if score is not None:
+            try:
+                ET.SubElement(obj, "score").text = f"{float(score):.6f}"
+            except (TypeError, ValueError):
+                pass
+
+        points = ann.get("points") or []
+        if ann.get("type") == "polygon" and len(points) >= 3:
+            polygon = ET.SubElement(obj, "polygon")
+            for point in points:
+                try:
+                    x, y = point[:2]
+                except (TypeError, ValueError, IndexError):
+                    continue
+                node = ET.SubElement(polygon, "pt")
+                try:
+                    ET.SubElement(node, "x").text = str(int(round(float(x))))
+                    ET.SubElement(node, "y").text = str(int(round(float(y))))
+                except (TypeError, ValueError, IndexError):
+                    polygon.remove(node)
+
         bndbox = ET.SubElement(obj, "bndbox")
         x1, y1, x2, y2 = ann["bbox"]
         ET.SubElement(bndbox, "xmin").text = str(x1)
@@ -260,7 +285,7 @@ def save_as_voc_xml(annotations, image_path, output_dir):
 
 
 def load_voc_xml(xml_path):
-    """读取 VOC 格式标注，返回目标列表 [{name, bbox}]"""
+    """Read standard VOC boxes plus autoLabel's optional score/polygon extensions."""
     tree = ET.parse(xml_path)
     root = tree.getroot()
     annotations = []
@@ -273,7 +298,23 @@ def load_voc_xml(xml_path):
         y1 = int(float(bndbox.findtext("ymin", "0")))
         x2 = int(float(bndbox.findtext("xmax", "0")))
         y2 = int(float(bndbox.findtext("ymax", "0")))
-        annotations.append({"name": name, "bbox": [x1, y1, x2, y2]})
+        annotation = {"name": name, "bbox": [x1, y1, x2, y2]}
+        try:
+            score = obj.findtext("score")
+            if score is not None:
+                annotation["score"] = float(score)
+        except ValueError:
+            pass
+        points = []
+        for point in obj.findall("polygon/pt"):
+            try:
+                points.append([int(float(point.findtext("x", "0"))), int(float(point.findtext("y", "0")))])
+            except ValueError:
+                continue
+        if len(points) >= 3:
+            annotation["type"] = "polygon"
+            annotation["points"] = points
+        annotations.append(annotation)
     return annotations
 
 

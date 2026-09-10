@@ -49,5 +49,11 @@ IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 BOX_THRESHOLD = 0.25
 TEXT_THRESHOLD = 0.25
 
+# Review triage.  Existing/imported annotations with no score are not treated
+# as low-confidence predictions.
+REVIEW_LOW_CONFIDENCE = 0.45
+REVIEW_DUPLICATE_IOU = 0.85
+REVIEW_MIN_BOX_AREA = 16
+
 # 默认提示词（多个类别用 " . " 分隔，需用英文）
 PROMPT = "cat . dog . person"
