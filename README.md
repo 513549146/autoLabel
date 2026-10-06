@@ -27,7 +27,7 @@
 pip install -r requirements.txt
 ```
 
-项目内已带有 Grounding DINO 相关源码。若希望 GPU 加速，请先按 PyTorch 官方说明安装与 CUDA 对应的 `torch` / `torchvision`。
+项目内已带有 Grounding DINO 相关源码。若希望 GPU 加速，请先按 PyTorch 官方说明安装与 CUDA 对应的 `torch` / `torchvision`。使用 YOLOE 前，请将官方 YOLOE 权重放入本地 `weights/` 目录（默认文件名：`yoloe-11l-seg.pt`）；权重不会提交到 GitHub。
 
 ### 2. 启动
 
@@ -107,7 +107,7 @@ my-project/
 
 | 模型 | 适用场景 |
 | --- | --- |
-| YOLOE（推荐） | 开放词表预标注；可用现有英文类别提示词，首用时自动下载官方权重。 |
+| YOLOE（推荐） | 开放词表预标注；可用现有英文类别提示词。将官方 `yoloe-11l-seg.pt` 放入本地 `weights/` 后即可使用。 |
 | Grounding DINO（兼容旧模型） | 保留现有本地 `grounding-dino-base` 权重的兼容后端。 |
 | Grounding DINO | 兼容旧版权重。 |
 | YOLO（微调） | 使用已审核的数据训练后，适合稳定的业务类别。 |
