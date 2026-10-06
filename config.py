@@ -21,14 +21,15 @@ else:
 WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")
 GROUNDINGDINO_CONFIG = os.path.join(BUNDLE_DIR, "groundingdino", "config", "GroundingDINO_SwinT_OGC.py")
 GROUNDINGDINO_WEIGHTS = os.path.join(WEIGHTS_DIR, "groundingdino_swint_ogc.pth")
-SAM_WEIGHTS = os.path.join(WEIGHTS_DIR, "sam_hq_vit_h.pth")
 # 本地 bert 文本编码器（已下载到项目内，无需联网）
 # 该检测权重是用 bert-base-uncased（英文）训练的，请勿更换为其它词表模型
 BERT_ENCODER_DIR = os.path.join(WEIGHTS_DIR, "bert-base-uncased")
 
-# 检测模型选择：gd15（Grounding DINO 1.5，推荐）/ gd_ogc（旧版）/ yolo（微调后）
-DETECTOR = "gd15"
+# 检测模型选择：yoloe（开放词表）/ gd15（Grounding DINO 兼容）/ gd_ogc（旧版）/ yolo（微调后）
+DETECTOR = "yoloe"
 GD15_DIR = os.path.join(WEIGHTS_DIR, "grounding-dino-base")
+# YOLOE 开放词表检测权重；首次部署后固定存放在项目 weights 目录。
+YOLOE_WEIGHTS = os.path.join(WEIGHTS_DIR, "yoloe-11l-seg.pt")
 YOLO_WEIGHTS = os.path.join(WEIGHTS_DIR, "yolo_best.pt")  # 微调后 YOLO 权重，训练后放在此处
 
 # YOLO 推理后处理参数
@@ -54,6 +55,7 @@ TEXT_THRESHOLD = 0.25
 REVIEW_LOW_CONFIDENCE = 0.45
 REVIEW_DUPLICATE_IOU = 0.85
 REVIEW_MIN_BOX_AREA = 16
+REVIEW_HIGH_RISK = 50
 
 # 默认提示词（多个类别用 " . " 分隔，需用英文）
 PROMPT = "cat . dog . person"
