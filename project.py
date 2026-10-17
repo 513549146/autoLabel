@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 
@@ -12,6 +13,7 @@ WORKBENCH_FILE = "autolabel.project.json"
 DATABASE_FILE = "autolabel.db"
 WORKSPACE_DATABASE_FILE = "workspace.db"
 ANNOTATION_VERSION_DIR = "annotation_versions"
+QUALITY_RULES_VERSION = 1
 STATUS_UNREVIEWED = "unreviewed"
 STATUS_NEEDS_REVIEW = "needs_review"
 STATUS_APPROVED = "approved"
@@ -130,10 +132,15 @@ class WorkspaceStore:
                 CREATE INDEX IF NOT EXISTS idx_recent_projects_opened_at ON recent_projects(opened_at DESC);
             """)
 
+    @contextmanager
     def _connect(self):
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def remember_project(self, project_dir, name):
         root = os.path.abspath(project_dir)
@@ -210,10 +217,15 @@ class ProjectStore:
                 pass
         return self.annotations_dir
 
+    @contextmanager
     def _connect(self):
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self):
         is_new = not os.path.exists(self.path)
@@ -226,7 +238,8 @@ class ProjectStore:
                 );
                 CREATE TABLE IF NOT EXISTS categories (
                     position INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE
+                    name TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS image_statuses (
                     filename TEXT PRIMARY KEY,
@@ -254,6 +267,19 @@ class ProjectStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_annotation_versions_filename_created
                     ON annotation_versions(filename, created_at DESC);
+                CREATE TABLE IF NOT EXISTS current_annotation_quality (
+                    filename TEXT PRIMARY KEY,
+                    risk_score INTEGER NOT NULL,
+                    rules_json TEXT NOT NULL,
+                    xml_mtime_ns INTEGER NOT NULL,
+                    xml_size INTEGER NOT NULL,
+                    image_mtime_ns INTEGER NOT NULL,
+                    image_size INTEGER NOT NULL,
+                    rules_version INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_current_annotation_quality_risk
+                    ON current_annotation_quality(risk_score DESC, filename);
                 CREATE TABLE IF NOT EXISTS dataset_exports (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     output_path TEXT NOT NULL,
@@ -282,7 +308,11 @@ class ProjectStore:
                     completed_at TEXT NOT NULL DEFAULT ''
                 );
             """)
-            connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("schema_version", "4"))
+            category_columns = {row["name"] for row in connection.execute("PRAGMA table_info(categories)")}
+            if "display_name" not in category_columns:
+                connection.execute("ALTER TABLE categories ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+            connection.execute("UPDATE categories SET display_name = name WHERE display_name = ''")
+            connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("schema_version", "6"))
             if self.images_dir:
                 connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("images_dir", self.images_dir))
             connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("annotations_dir", self.annotations_dir))
@@ -321,11 +351,39 @@ class ProjectStore:
         with self._connect() as connection:
             return [row["name"] for row in connection.execute("SELECT name FROM categories ORDER BY position")]
 
+    def category_records(self):
+        """Return ordered English model labels and their review display names."""
+        with self._connect() as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT position, name, COALESCE(NULLIF(display_name, ''), name) AS display_name "
+                "FROM categories ORDER BY position"
+            )]
+
+    def category_display_names(self):
+        return {item["name"]: item["display_name"] for item in self.category_records()}
+
     def set_categories(self, categories):
         cleaned = _clean_categories(categories)
+        self.set_category_records([{"name": name, "display_name": name} for name in cleaned])
+
+    def set_category_records(self, records):
+        """Replace the category table while keeping machine labels unique and stable."""
+        cleaned = []
+        seen = set()
+        for record in records or []:
+            name = str(record.get("name", "") if isinstance(record, dict) else "").strip()
+            display_name = str(record.get("display_name", "") if isinstance(record, dict) else "").strip()
+            key = name.casefold()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            cleaned.append((name, display_name or name))
         with self._connect() as connection:
             connection.execute("DELETE FROM categories")
-            connection.executemany("INSERT INTO categories(position, name) VALUES (?, ?)", enumerate(cleaned))
+            connection.executemany(
+                "INSERT INTO categories(position, name, display_name) VALUES (?, ?, ?)",
+                [(position, name, display_name) for position, (name, display_name) in enumerate(cleaned)],
+            )
 
     def status_for(self, filename):
         with self._connect() as connection:
@@ -481,10 +539,84 @@ class ProjectStore:
             versions.append(item)
         return versions
 
-    def mark_batch_for_review(self, filenames):
+    @staticmethod
+    def _file_stamp(path):
+        try:
+            stat = os.stat(path)
+            return stat.st_mtime_ns, stat.st_size
+        except OSError:
+            return -1, -1
+
+    def quality_stamp(self, filename):
+        """Cheap invalidation key for the current XML and image, not a version snapshot."""
+        stem = os.path.splitext(filename)[0]
+        xml = os.path.join(self.annotations_dir, stem + ".xml")
+        image = os.path.join(self.images_dir, filename)
+        return (*self._file_stamp(xml), *self._file_stamp(image))
+
+    def quality_records_for(self, filenames):
+        """Read current risk metadata without opening image or annotation files."""
+        names = list(dict.fromkeys(str(filename) for filename in filenames))
+        result = {}
+        if not names:
+            return result
+        with self._connect() as connection:
+            for start in range(0, len(names), 900):
+                batch = names[start:start + 900]
+                placeholders = ", ".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT filename, risk_score, rules_json, xml_mtime_ns, xml_size, image_mtime_ns, image_size, rules_version "
+                    f"FROM current_annotation_quality WHERE filename IN ({placeholders})", batch,
+                ).fetchall()
+                for row in rows:
+                    try:
+                        rules = frozenset(json.loads(row["rules_json"]))
+                    except (TypeError, ValueError):
+                        rules = frozenset({"invalid"})
+                    result[row["filename"]] = (
+                        row["risk_score"], rules,
+                        (row["xml_mtime_ns"], row["xml_size"], row["image_mtime_ns"], row["image_size"]),
+                        row["rules_version"],
+                    )
+        return result
+
+    def upsert_quality_records(self, records):
+        """Persist only evaluations whose source files still match their stamps."""
+        prepared = []
+        for filename, risk, rules, stamp in records:
+            if self.quality_stamp(filename) != stamp:
+                continue
+            prepared.append((
+                str(filename), int(risk), json.dumps(sorted(rules), ensure_ascii=False),
+                *stamp, QUALITY_RULES_VERSION, _now(),
+            ))
+        if not prepared:
+            return set()
+        with self._connect() as connection:
+            connection.executemany(
+                "INSERT INTO current_annotation_quality "
+                "(filename, risk_score, rules_json, xml_mtime_ns, xml_size, image_mtime_ns, image_size, rules_version, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(filename) DO UPDATE SET risk_score=excluded.risk_score, rules_json=excluded.rules_json, "
+                "xml_mtime_ns=excluded.xml_mtime_ns, xml_size=excluded.xml_size, "
+                "image_mtime_ns=excluded.image_mtime_ns, image_size=excluded.image_size, "
+                "rules_version=excluded.rules_version, updated_at=excluded.updated_at",
+                prepared,
+            )
+        return {row[0] for row in prepared}
+
+    def upsert_quality(self, filename, risk, rules):
+        self.upsert_quality_records([(filename, risk, rules, self.quality_stamp(filename))])
+
+    def mark_batch_for_review(self, filenames, include_approved=False, include_skipped=False):
+        """Route pre-labeled images to review without reopening approvals by default."""
         ordered = list(dict.fromkeys(str(filename) for filename in filenames))
         statuses = self.statuses_for(ordered)
-        pending = [filename for filename in ordered if statuses.get(filename) in (STATUS_UNREVIEWED, STATUS_SKIPPED)]
+        pending = [
+            filename for filename in ordered
+            if include_approved or statuses.get(filename) == STATUS_UNREVIEWED
+            or (include_skipped and statuses.get(filename) == STATUS_SKIPPED)
+        ]
         if not pending:
             return False
         with self._connect() as connection:

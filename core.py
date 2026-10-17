@@ -602,7 +602,7 @@ def training_readiness(annotations_dir, filenames, categories=None):
     return {"class_counts": class_counts, "labels_by_file": labels_by_file, "empty": empty, "missing": missing, "sparse": sparse}
 
 
-def train_yolo_dataset(data_yaml, base_model, epochs, runs_dir):
+def train_yolo_dataset(data_yaml, base_model, epochs, runs_dir, on_progress=None):
     """Run Ultralytics training and return the resulting run and best weight paths."""
     from ultralytics import YOLO
 
@@ -616,6 +616,26 @@ def train_yolo_dataset(data_yaml, base_model, epochs, runs_dir):
         raise ValueError("训练轮数必须大于 0")
     os.makedirs(runs_dir, exist_ok=True)
     model = YOLO(base_model)
+    if on_progress:
+        def report_epoch(trainer):
+            """Forward concise epoch updates without depending on Ultralytics log formatting."""
+            current = int(getattr(trainer, "epoch", -1)) + 1
+            total = int(getattr(trainer, "epochs", epochs))
+            details = []
+            try:
+                losses = trainer.label_loss_items(getattr(trainer, "loss_items", None), prefix="train")
+                details.extend(f"{name}={float(value):.4f}" for name, value in losses.items())
+            except Exception:
+                pass
+            try:
+                metrics = getattr(trainer, "metrics", {}) or {}
+                for name, value in metrics.items():
+                    if "map" in str(name).lower():
+                        details.append(f"{name}={float(value):.4f}")
+            except Exception:
+                pass
+            on_progress(current, total, " · ".join(details))
+        model.add_callback("on_train_epoch_end", report_epoch)
     model.train(data=data_yaml, epochs=epochs, project=runs_dir, name="finetune", exist_ok=False, verbose=True)
     run_dir = str(model.trainer.save_dir)
     best = os.path.join(run_dir, "weights", "best.pt")
