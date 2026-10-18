@@ -1,7 +1,9 @@
-# 模型权重
-weights/
+# 项目内临时权重仍忽略；仓库 weights/ 中的模型由 Git LFS 管理
 *.pth
 *.pt
+!weights/*.pth
+!weights/*.pt
+weights/**/.cache/
 
 # 输入图片与输出标注
 images/*

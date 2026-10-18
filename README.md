@@ -23,7 +23,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
-界面使用 PySide6，图像与 VOC XML 处理使用 OpenCV、Pillow 等库；模型相关依赖见 `requirements.txt`。安装清单中的 CLIP 依赖来自 GitHub，因此完整安装需要能访问相应来源。模型权重不随仓库上传：使用 YOLOE 前，把对应权重放入本地 `weights/`（默认 `yoloe-11l-seg.pt`）；GPU 加速还需要与本机 CUDA 环境相匹配的 PyTorch。
+模型文件存放在仓库的 `weights/`，大文件由 Git LFS 管理。克隆仓库前请安装 Git LFS；已有克隆在仓库目录执行 `git lfs install` 和 `git lfs pull`，确保下载到真实模型文件，而不是 LFS 指针。模型文件合计约 2.6 GiB，首次下载需要相应的磁盘空间和网络流量。
+
+界面使用 PySide6，图像与 VOC XML 处理使用 OpenCV、Pillow 等库；模型相关依赖见 `requirements.txt`。安装清单中的 CLIP 依赖来自 GitHub，因此完整安装需要能访问相应来源。YOLOE 默认使用 `weights/yoloe-11l-seg.pt`；GPU 加速还需要与本机 CUDA 环境相匹配的 PyTorch。
 
 首次启动后，在首页新建项目，或打开已有项目目录。后续启动会尝试恢复上一次有效项目；也可以从左侧“最近项目”切换。
 
