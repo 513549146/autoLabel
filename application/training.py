@@ -14,5 +14,10 @@ class ImageTrainingService:
         )
 
     @staticmethod
-    def train(data_yaml, base_model, runs_dir, epochs, on_progress=None):
-        return core.train_yolo_dataset(data_yaml, base_model, epochs, runs_dir, on_progress=on_progress)
+    def train(data_yaml, base_model, runs_dir, epochs, on_progress=None,
+              on_stage=None, on_batch=None, should_stop=None):
+        return core.train_yolo_dataset(
+            data_yaml, base_model, epochs, runs_dir,
+            on_progress=on_progress, on_stage=on_stage, on_batch=on_batch,
+            should_stop=should_stop,
+        )
