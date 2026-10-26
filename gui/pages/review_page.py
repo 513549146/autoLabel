@@ -133,7 +133,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self.box_tool = tool(
             bar,
             sprite_icon("box", size=24),
-            "绘制矩形标注框（R）\n空白处拖动画框；单击已有框选中后可编辑\n未选中框上拖动可平移；Ctrl+拖动可画重叠框",
+            "绘制矩形标注框（R）\n在图片任意位置拖动可画框，已有框内也能直接画\n单击选框，重叠处连续单击切换；平移请按 H",
             checkable=True,
         )
         self.polygon_tool = tool(
@@ -812,7 +812,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self.canvas.set_default_label(name)
         display_name = self._category_display_name(name)
         self.box_tool.setToolTip(
-            f"绘制矩形标注框（R）\n当前类别：{display_name}；新框将沿用此类别\n空白处拖动画框；单击已有框选中后可编辑\n未选中框上拖动可平移；Ctrl+拖动可画重叠框"
+            f"绘制矩形标注框（R）\n当前类别：{display_name}；新框将沿用此类别\n在图片任意位置拖动可画框，已有框内也能直接画\n单击选框，重叠处连续单击切换；平移请按 H"
         )
         self.polygon_tool.setToolTip(
             f"绘制多边形标注（P）\n当前类别：{display_name}；新框将沿用此类别\n单击已有标注选中后可编辑；未选中框上拖动可平移\nCtrl+单击可在标注上添加顶点"
@@ -928,7 +928,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._drawing_category = None
         self.canvas.set_default_label("object")
         self.box_tool.setToolTip(
-            "绘制矩形标注框（R）\n空白处拖动画框；单击已有框选中后可编辑\n未选中框上拖动可平移；Ctrl+拖动可画重叠框"
+            "绘制矩形标注框（R）\n在图片任意位置拖动可画框，已有框内也能直接画\n单击选框，重叠处连续单击切换；平移请按 H"
         )
         self.polygon_tool.setToolTip(
             "绘制多边形标注（P）\n单击已有标注选中后可编辑；未选中框上拖动可平移\nCtrl+单击可在标注上添加顶点"
