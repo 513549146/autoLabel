@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import traceback
 from dataclasses import replace
 from typing import Callable
 
@@ -41,6 +42,7 @@ class QuickAnnotationWorkflow:
     mode = AnnotationWorkflowMode.QUICK
 
     def __init__(self, registry: ImageModelRegistry | None = None):
+        """装配各原子操作；它们可被独立复用于其他编排方式。"""
         self.registry = registry or ImageModelRegistry()
         self.validate = ValidateQuickTaskOperation()
         self.select_targets = SelectImageTargetsOperation()
@@ -53,6 +55,7 @@ class QuickAnnotationWorkflow:
         self.route_review = ReviewRoutingOperation()
 
     def _context(self, request: QuickAnnotationRequest) -> QuickOperationContext:
+        """读取项目已应用的流程图，并据此决定是否启用补扫等可选步骤。"""
         project = ProjectStore(request.annotations_dir, request.images_dir, request.project_root)
         state = WorkflowComposerSettings.load(project)
         template = WorkflowTemplateRegistry().get(state.applied_template_id)
@@ -67,14 +70,17 @@ class QuickAnnotationWorkflow:
                                      applied_steps=state.applied_graph.nodes)
 
     def plan(self, request: QuickAnnotationRequest) -> tuple[str, ...]:
+        """只做校验与选片，返回本次将处理的文件名而不会加载模型。"""
         context = self._context(request)
         context.request = self.validate.execute(context)
         return self.select_targets.execute(context)
 
     def save_settings(self, project, settings) -> None:
+        """把快速标注设置写入项目数据库而非全局配置。"""
         QuickAnnotationSettings.save(project, settings)
 
     def load_settings(self, project):
+        """读取项目内的快速标注设置，损坏时回退默认值。"""
         return QuickAnnotationSettings.load(project)
 
     def run(
@@ -84,6 +90,7 @@ class QuickAnnotationWorkflow:
         on_log: Callable[[str], None],
         on_progress: Callable[[int], None],
     ) -> QuickAnnotationResult:
+        """按已应用流程逐图执行检测、融合、落盘与风险索引，结束再路由到审核。"""
         context = self._context(request)
         context.request = self.validate.execute(context)
         filenames = context.request.filenames or self.select_targets.execute(context)
@@ -118,6 +125,7 @@ class QuickAnnotationWorkflow:
                 on_log(f"[完成] {filename}：{len(predictions)} 个候选 · {' + '.join(providers)}{risk_note}")
             except Exception as error:
                 on_log(f"[失败] {filename}：{error}")
+                print(traceback.format_exc())
             if total:
                 on_progress(int((index + 1) * 100 / total))
 

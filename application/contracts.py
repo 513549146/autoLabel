@@ -22,6 +22,7 @@ class ImagePrediction:
     risk_flags: tuple[str, ...] = ()
 
     def as_annotation(self) -> dict:
+        """转成 core.VOC 写入所用的标注字典，保留分数供风险规则使用。"""
         annotation = {"name": self.label, "bbox": list(self.bbox)}
         if self.score is not None:
             annotation["score"] = float(self.score)
@@ -37,6 +38,7 @@ class PredictionBundle:
     predictions: tuple[ImagePrediction, ...] = ()
 
     def annotations(self) -> list[dict]:
+        """把本次预测整体转成标注字典列表。"""
         return [prediction.as_annotation() for prediction in self.predictions]
 
 

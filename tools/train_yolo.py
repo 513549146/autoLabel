@@ -14,6 +14,7 @@ import finetune
 
 
 def main():
+    """解析命令行参数并调用 finetune.train_yolo 执行微调训练。"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="dataset.yaml 路径")
     ap.add_argument("--model", default="yolov8s.pt", help="预训练权重")

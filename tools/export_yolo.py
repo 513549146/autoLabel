@@ -14,6 +14,7 @@ import finetune
 
 
 def main():
+    """解析命令行参数并调用 finetune.export_voc_to_yolo 导出训练集。"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--images", required=True, help="图片目录")
     ap.add_argument("--annotations", required=True, help="VOC 标注目录")

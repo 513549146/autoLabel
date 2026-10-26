@@ -38,40 +38,51 @@ class FlowLayout(QLayout):
     """A compact wrapping layout for text-sized project chips."""
 
     def __init__(self, parent=None, spacing=5):
+        """初始化流动布局的条目列表与默认间距。"""
         super().__init__(parent)
         self._items = []
         self.setContentsMargins(0, 2, 0, 2)
         self.setSpacing(spacing)
 
     def addItem(self, item):
+        """追加一个布局条目，供换行排布使用。"""
         self._items.append(item)
 
     def count(self):
+        """返回当前条目数量。"""
         return len(self._items)
 
     def itemAt(self, index):
+        """按下标取条目，越界返回 None。"""
         return self._items[index] if 0 <= index < len(self._items) else None
 
     def takeAt(self, index):
+        """取出并移除指定条目，让调用方可安全重建内容。"""
         return self._items.pop(index) if 0 <= index < len(self._items) else None
 
     def hasHeightForWidth(self):
+        """声明高度依赖宽度，Qt 才会按换行结果分配空间。"""
         return True
 
     def heightForWidth(self, width):
+        """试排一遍算出给定宽度下所需高度。"""
         return self._layout_items(QRect(0, 0, width, 0), True)
 
     def setGeometry(self, rect):
+        """按实际矩形重新排布全部条目。"""
         super().setGeometry(rect)
         self._layout_items(rect, False)
 
     def sizeHint(self):
+        """以侧栏宽度估算首选尺寸。"""
         return QSize(0, self.heightForWidth(232))
 
     def minimumSize(self):
+        """以最窄可用宽度估算最小尺寸。"""
         return QSize(0, self.heightForWidth(120))
 
     def _layout_items(self, rect, test_only):
+        """逐条换行排布；test_only 为真时只计算高度而不移动控件。"""
         left, top, right, bottom = self.getContentsMargins()
         area = rect.adjusted(left, top, -right, -bottom)
         x, y, line_height = area.x(), area.y(), 0
@@ -178,6 +189,7 @@ def asset_icon(filename: str, size=24, glyph_scale=1.0) -> QIcon:
 def apply_app_style(app: QApplication):
     # Qt's off-screen and packaged environments do not always discover Windows'
     # CJK fonts automatically. Register a deterministic Chinese UI fallback.
+    """注册中文字体并应用全局样式表；各页面靠 objectName 命中样式。"""
     for font_path in (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\NotoSansSC-VF.ttf"):
         if os.path.isfile(font_path):
             QFontDatabase.addApplicationFont(font_path)
@@ -271,12 +283,14 @@ def apply_app_style(app: QApplication):
 
 
 def card() -> QFrame:
+    """创建标准白色圆角卡片容器。"""
     frame = QFrame()
     frame.setObjectName("card")
     return frame
 
 
 def label(text: str, object_name: str | None = None) -> QLabel:
+    """创建文本标签，可按 objectName 套用预定义样式。"""
     item = QLabel(text)
     if object_name:
         item.setObjectName(object_name)
@@ -284,6 +298,7 @@ def label(text: str, object_name: str | None = None) -> QLabel:
 
 
 def button(text: str, primary=False) -> QPushButton:
+    """创建普通按钮，primary 为真时使用主色样式。"""
     item = QPushButton(text)
     item.setObjectName("primary" if primary else "secondary")
     item.setCursor(Qt.PointingHandCursor)
@@ -291,6 +306,7 @@ def button(text: str, primary=False) -> QPushButton:
 
 
 def destructive_button(text: str) -> QPushButton:
+    """创建危险操作按钮（红色弱底样式）。"""
     item = QPushButton(text)
     item.setObjectName("destructive")
     item.setCursor(Qt.PointingHandCursor)
@@ -314,6 +330,7 @@ def _ios_dialog(parent, title: str, message: str):
 
 
 def ios_alert(parent, title: str, message: str, confirm_text="好", cancel_text=None, destructive=False):
+    """弹出无边框确认对话框，返回用户是否确认。"""
     dialog, layout = _ios_dialog(parent, title, message)
     layout.addSpacing(8)
     actions = QVBoxLayout(); actions.setSpacing(7)
@@ -325,6 +342,7 @@ def ios_alert(parent, title: str, message: str, confirm_text="好", cancel_text=
 
 
 def ios_text_input(parent, title: str, prompt: str, text="", placeholder="", confirm_text="完成"):
+    """弹出单行文本输入对话框，返回 (文本, 是否确认)。"""
     dialog, layout = _ios_dialog(parent, title, prompt)
     field = QLineEdit(text); field.setPlaceholderText(placeholder); layout.addWidget(field)
     layout.addSpacing(6)
@@ -335,6 +353,7 @@ def ios_text_input(parent, title: str, prompt: str, text="", placeholder="", con
 
 
 def ios_item_input(parent, title: str, prompt: str, items, current=0, editable=False, confirm_text="完成"):
+    """弹出下拉选择对话框，返回 (选中项, 是否确认)。"""
     dialog, layout = _ios_dialog(parent, title, prompt)
     field = FlatComboBox(); field.addItems([str(item) for item in items]); field.setEditable(editable)
     if field.count(): field.setCurrentIndex(max(0, min(field.count() - 1, current)))
@@ -347,6 +366,7 @@ def ios_item_input(parent, title: str, prompt: str, items, current=0, editable=F
 
 
 def tool(parent: QWidget, icon: QIcon, tip: str, checkable=False, icon_size=24) -> QToolButton:
+    """创建统一 40px 命中区的工具栏图标按钮。"""
     item = QToolButton(parent)
     item.setObjectName("tool")
     item.setIcon(icon)
@@ -364,6 +384,7 @@ class DoubleChevronButton(QToolButton):
     """A restrained, iOS-like double chevron for collapsible inspector sections."""
 
     def __init__(self, parent=None):
+        """初始化折叠箭头按钮的尺寸与提示文案。"""
         super().__init__(parent)
         self._collapsed = False
         self.setFixedSize(34, 18)
@@ -371,11 +392,13 @@ class DoubleChevronButton(QToolButton):
         self.setToolTip("收起类别筛选")
 
     def set_collapsed(self, collapsed):
+        """记录折叠状态并同步提示文案与重绘。"""
         self._collapsed = bool(collapsed)
         self.setToolTip("展开类别筛选" if self._collapsed else "收起类别筛选")
         self.update()
 
     def paintEvent(self, _event):
+        """按折叠状态绘制上下指向的双箭头，悬停时高亮。"""
         painter = QPainter(self); painter.setRenderHint(QPainter.Antialiasing)
         if self.underMouse():
             painter.fillRect(self.rect(), QColor("#F0F6FF"))
@@ -393,6 +416,7 @@ class FlatComboBox(QComboBox):
     """Flat selector chrome with an intentionally visible, quiet chevron."""
 
     def paintEvent(self, event):
+        """在原生绘制之上叠加自绘的下拉箭头。"""
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -406,6 +430,7 @@ class WindowChrome(QFrame):
     """A compact desktop title bar: colored workspace dots on the left, controls on the right."""
 
     def __init__(self, window):
+        """构建无边框标题栏：左侧装饰圆点，右侧最小化/最大化/关闭。"""
         super().__init__(window)
         self.window = window
         self._drag_origin = None
@@ -423,20 +448,24 @@ class WindowChrome(QFrame):
             layout.addWidget(control)
 
     def mousePressEvent(self, event):
+        """记录按下时指针相对窗口的偏移，供拖动移动窗口。"""
         if event.button() == Qt.LeftButton and not self.window.isMaximized():
             self._drag_origin = event.globalPosition().toPoint() - self.window.frameGeometry().topLeft()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        """按住左键拖动标题栏时移动整个窗口。"""
         if self._drag_origin is not None and event.buttons() & Qt.LeftButton and not self.window.isMaximized():
             self.window.move(event.globalPosition().toPoint() - self._drag_origin)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        """结束标题栏拖动并清除偏移记录。"""
         self._drag_origin = None
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
+        """双击标题栏在最大化与还原之间切换。"""
         if event.button() == Qt.LeftButton:
             self.window.toggle_maximized()
         super().mouseDoubleClickEvent(event)
@@ -448,6 +477,7 @@ class ResizableRoot(QWidget):
     EDGE = 7
 
     def __init__(self, window):
+        """初始化根容器的边缘缩放状态与光标跟踪。"""
         super().__init__(window)
         self.window = window
         self._edges = (False, False, False, False)
@@ -463,10 +493,12 @@ class ResizableRoot(QWidget):
             child.installEventFilter(self)
 
     def _edges_at(self, position):
+        """判断指针靠近哪些窗口边缘，用于决定缩放方向。"""
         return (position.x() <= self.EDGE, position.x() >= self.width() - self.EDGE,
                 position.y() <= self.EDGE, position.y() >= self.height() - self.EDGE)
 
     def _set_resize_cursor(self, edges):
+        """按可缩放边缘设置对应的缩放光标。"""
         left, right, top, bottom = edges
         if (left and top) or (right and bottom): self.setCursor(Qt.SizeFDiagCursor)
         elif (right and top) or (left and bottom): self.setCursor(Qt.SizeBDiagCursor)
@@ -475,6 +507,7 @@ class ResizableRoot(QWidget):
         else: self.unsetCursor()
 
     def mousePressEvent(self, event):
+        """在边缘按下时进入缩放状态。"""
         edges = self._edges_at(event.position().toPoint())
         if event.button() == Qt.LeftButton and any(edges) and not self.window.isMaximized():
             self._edges = edges
@@ -484,6 +517,7 @@ class ResizableRoot(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        """在边缘拖动时调整窗口几何，其余位置只更新光标。"""
         if self._start_global is None:
             self._set_resize_cursor(self._edges_at(event.position().toPoint()))
             super().mouseMoveEvent(event); return
@@ -506,6 +540,7 @@ class ResizableRoot(QWidget):
         event.accept()
 
     def eventFilter(self, watched, event):
+        """跟踪子控件内的指针位置，避免边缘热点被子控件遮挡失效。"""
         if self._start_global is None and event.type() == QEvent.MouseMove:
             # Mouse moves over the sidebar/page child widgets do not reach the root.
             # Resolve the edge from the global position so a stale resize cursor is
@@ -519,6 +554,7 @@ class ResizableRoot(QWidget):
         return super().eventFilter(watched, event)
 
     def mouseReleaseEvent(self, event):
+        """结束窗口缩放并恢复普通光标。"""
         self._edges = (False, False, False, False)
         self._start_global = self._start_geometry = None
         self.unsetCursor()
@@ -526,7 +562,9 @@ class ResizableRoot(QWidget):
 
 
 class SidebarItem(QToolButton):
+    """侧栏导航项，可在标题右侧追加计数徽标。"""
     def __init__(self, title: str, icon: QIcon, parent):
+        """初始化导航项的图标、可选中状态与最小高度。"""
         super().__init__(parent)
         self.title, self.count = title, ""
         self.setObjectName("nav")
@@ -539,8 +577,10 @@ class SidebarItem(QToolButton):
         self._render()
 
     def set_count(self, count: str):
+        """更新计数徽标并立即重绘标签。"""
         self.count = count
         self._render()
 
     def _render(self):
+        """按有无计数拼装按钮文本。"""
         self.setText(f"{self.title}        {self.count}" if self.count else self.title)

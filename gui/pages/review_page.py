@@ -9,9 +9,11 @@ from application.preannotation import ImagePreannotationService
 from project import QUALITY_RULES_VERSION
 
 class ReviewPage(QWidget):
+    """待审核页：风险筛选队列、可编辑画布、类别显隐、抽检与版本恢复。"""
     quality_index_finished = Signal(int, str, object)
 
     def __init__(self, window):
+        """构建工具栏、画布、右侧检查器与缩略图条，并挂接各类节流定时器。"""
         super().__init__(); self.window = window; self.files: list[str] = []; self.index = 0; self._risk_cache = {}; self._risk_project_root = ""; self._spot_check_files = None; self._thumbnail_buttons = {}; self._thumbnail_signature = (); self._thumbnail_generation = 0; self._thumbnail_scroll_anchor = 0; self._thumbnail_scroll_guard = False; self._thumbnail_icons = {}; self._thumbnail_render_queue = []; self._thumbnail_render_pending = set(); self._thumbnail_risk_queue = []; self._thumbnail_risk_pending = set(); self._quality_filename = ""; self._current_dirty = False
         self._drawing_category: str | None = None
         self._quality_scan_token = 0
@@ -125,12 +127,14 @@ class ReviewPage(QWidget):
         self.canvas_card.installEventFilter(self)
 
     def eventFilter(self, watched, event):
+        """画布卡片尺寸变化时重新摆放标注清单与保存提示。"""
         if watched is getattr(self, "canvas_card", None) and event.type() == QEvent.Resize:
             self._position_annotation_drawer()
             self._position_save_toast()
         return super().eventFilter(watched, event)
 
     def _position_annotation_drawer(self):
+        """把标注清单贴到画布卡片右侧并保持最小可用宽度。"""
         if not self.annotation_drawer.isVisible():
             return
         margin = 12
@@ -140,6 +144,7 @@ class ReviewPage(QWidget):
         self.annotation_drawer.raise_()
 
     def _position_save_toast(self):
+        """把保存提示居中显示在画布卡片上。"""
         if not self.save_toast.isVisible():
             return
         self.save_toast.adjustSize()
@@ -150,6 +155,7 @@ class ReviewPage(QWidget):
         self.save_toast.raise_()
 
     def _show_save_toast(self, message):
+        """显示保存提示，1.6 秒后自动隐藏。"""
         self.save_toast.setText("✓ " + message)
         self.save_toast.adjustSize()
         self.save_toast.show()
@@ -157,6 +163,7 @@ class ReviewPage(QWidget):
         QTimer.singleShot(1600, self.save_toast.hide)
 
     def toggle_annotation_drawer(self, checked=None):
+        """打开或关闭覆盖式标注清单。"""
         visible = not self.annotation_drawer.isVisible() if checked is None else bool(checked)
         self.annotation_drawer.setVisible(visible)
         self.list_button.setChecked(visible)
@@ -165,6 +172,7 @@ class ReviewPage(QWidget):
             self._position_annotation_drawer()
 
     def _drawer_categories(self):
+        """重建标注清单的类别下拉，尽量保留当前选项。"""
         current = self.drawer_category.currentData()
         categories = self._available_categories()
         self.drawer_category.blockSignals(True); self.drawer_category.clear(); self.drawer_category.addItem("全部类别", "")
@@ -174,6 +182,7 @@ class ReviewPage(QWidget):
         self.drawer_category.setCurrentIndex(target if target >= 0 else 0); self.drawer_category.blockSignals(False)
 
     def _refresh_annotation_drawer(self):
+        """按搜索词与类别重建清单行，含逐项显隐开关与定位入口。"""
         if not hasattr(self, "annotation_drawer"):
             return
         self._drawer_categories()
@@ -206,16 +215,19 @@ class ReviewPage(QWidget):
         self.drawer_count.setText(f"{len(self.canvas.shapes)} 个框 · 显示 {shown}")
 
     def _set_annotation_visible(self, index: int, visible: bool):
+        """在画布上显示或隐藏指定标注框。"""
         hidden = set(self.canvas.hidden_indices)
         hidden.discard(index) if visible else hidden.add(index)
         self.canvas.set_hidden_indices(hidden)
         self._refresh_annotation_drawer()
 
     def _toggle_annotation_visibility(self, control: QToolButton, index: int, visible: bool):
+        """清单内勾选框的响应：同步按钮文本并改写画布显隐。"""
         control.setText("✓" if visible else "")
         self._set_annotation_visible(index, visible)
 
     def _select_annotation_from_list(self, index: int):
+        """从清单定位到画布中的某个框：取消隐藏、切到选择工具并居中。"""
         if not 0 <= index < len(self.canvas.shapes):
             return
         name = self.canvas.shapes[index].get("name", "")
@@ -227,6 +239,7 @@ class ReviewPage(QWidget):
         self._refresh_annotation_drawer()
 
     def _risk_for(self, filename):
+        """读取风险索引缓存；规则版本不符或缺失时返回 None 表示尚未算出。"""
         cached = self._risk_cache.get(filename)
         if cached is not None:
             return cached
@@ -275,6 +288,7 @@ class ReviewPage(QWidget):
             pass
 
     def _ensure_quality_index(self, filenames):
+        """为缺少索引的图片启动后台风险扫描，同一时刻只跑一个线程。"""
         if not self.window.project or self._quality_index_error:
             return
         missing = [filename for filename in filenames if filename not in self._quality_known_files]
@@ -289,6 +303,7 @@ class ReviewPage(QWidget):
         self._quality_scan_thread.start()
 
     def _on_quality_index_finished(self, token, root, result):
+        """回主线程合并后台扫描结果；令牌或项目已变则丢弃。"""
         if token != self._quality_scan_token or root != os.path.abspath(self.window.project_root or ""):
             return
         processed, error = result
@@ -299,6 +314,7 @@ class ReviewPage(QWidget):
 
     def _on_issue_filter_changed(self):
         # Save the old image before resetting its position in the new result set.
+        """切换筛选时先保存当前图片、重置位置并重新校验索引。"""
         self._save_current(silent=True)
         self.index = 0
         self._quality_index_error = ""
@@ -308,6 +324,7 @@ class ReviewPage(QWidget):
         self.refresh(save_current=False)
 
     def _update_review_progress(self):
+        """按全项目“已通过 / 已进入审核”刷新底部细进度条。"""
         if not self.window.project:
             percent = 0
         else:
@@ -318,6 +335,7 @@ class ReviewPage(QWidget):
         self.progress_text.setText(f"{percent}%")
 
     def _update_queue_summary(self, files, quality):
+        """在工具栏下方说明当前队列构成或索引建立进度。"""
         if self._spot_check_files is not None:
             records = self.window.project.spot_checks_for(self._spot_check_files) if self.window.project else {}
             pending = sum(record.get("state") == "sampled" for record in records.values())
@@ -347,6 +365,7 @@ class ReviewPage(QWidget):
                 self.queue_summary.setText(f"待审核 {len(files)} 张 · 可切换“风险队列”按质量规则筛选")
 
     def _filtered_files(self, files, quality):
+        """按筛选模式与风险分生成当前审核队列。"""
         if self._spot_check_files is not None:
             records = self.window.project.spot_checks_for(self._spot_check_files) if self.window.project else {}
             return [filename for filename in self._spot_check_files if records.get(filename, {}).get("state") == "sampled"]
@@ -362,6 +381,7 @@ class ReviewPage(QWidget):
         return sorted(result, key=lambda filename: (-quality[filename][0], filename.lower()))
 
     def _update_quality_hint(self, filename):
+        """把当前图片的风险分与命中的质量规则显示在检查器中。"""
         labels = {
             "empty": "空标注", "low_confidence": "低置信度", "tiny": "极小框",
             "out_of_bounds": "越界框", "duplicate": "疑似重复框", "invalid": "标注文件异常",
@@ -382,6 +402,7 @@ class ReviewPage(QWidget):
         self.quality_hint.setStyleSheet("color:#C2410C;" if risk >= config.REVIEW_HIGH_RISK else "color:#D97706;" if issues else "color:#17834C;")
 
     def _schedule_quality_hint(self, filename):
+        """延迟 140ms 再计算质量提示，避免快速翻页时反复计算。"""
         if filename in self._risk_cache:
             self._update_quality_hint(filename)
             return
@@ -391,10 +412,12 @@ class ReviewPage(QWidget):
         self._quality_timer.start(140)
 
     def _flush_quality_hint(self):
+        """延迟结束时确认图片未变再真正更新质量提示。"""
         if self.files and self._quality_filename == self.files[self.index]:
             self._update_quality_hint(self._quality_filename)
 
     def refresh(self, *, save_current=True):
+        """重读队列与风险索引并重载当前图片；项目切换会清空所有缓存。"""
         if save_current:
             self._save_current(silent=True)
         project_root = os.path.abspath(self.window.project_root) if self.window.project_root else ""
@@ -426,24 +449,29 @@ class ReviewPage(QWidget):
                 self._apply_thumbnail_risk(item, record[0] if record else None)
 
     def open_spot_check(self, filenames):
+        """进入最终抽检模式：只处理指定图片并禁用筛选切换。"""
         self._spot_check_files = list(dict.fromkeys(filenames)); self.issue_filter.setEnabled(False); self.refresh()
 
     def clear_spot_check(self):
+        """退出抽检模式并恢复筛选下拉。"""
         if self._spot_check_files is None:
             return
         self._spot_check_files = None; self.issue_filter.setEnabled(True)
 
     def _connect_navigation_button(self, control, direction):
+        """把翻页按钮接到长按连续翻页逻辑。"""
         control.pressed.connect(lambda value=direction: self._begin_navigation_hold(value))
         control.released.connect(self._end_navigation_hold)
 
     def _begin_navigation_hold(self, direction):
+        """按下翻页按钮后等待 380ms，再进入连续翻页。"""
         if not self.files:
             return
         self._nav_hold_direction = direction
         self._nav_hold_timer.start(380)
 
     def _end_navigation_hold(self):
+        """松开时若尚未进入连续翻页则单步翻页，并停止重复定时器。"""
         direction = self._nav_hold_direction
         if not direction:
             return
@@ -454,12 +482,14 @@ class ReviewPage(QWidget):
         self._nav_hold_direction = 0
 
     def _start_hold_navigation(self):
+        """长按触发后开始每 150ms 翻一页。"""
         if not self._nav_hold_direction:
             return
         self.move(self._nav_hold_direction)
         self._nav_repeat_timer.start(150)
 
     def _repeat_navigation(self):
+        """连续翻页命中首尾时停止重复。"""
         direction = self._nav_hold_direction
         at_end = direction > 0 and self.index >= len(self.files) - 1
         at_start = direction < 0 and self.index <= 0
@@ -469,6 +499,7 @@ class ReviewPage(QWidget):
         self.move(direction)
 
     def _ensure_thumbnail_strip(self, anchor_index=None):
+        """维持以当前图片为中心的缩略图窗口，滚动远离时才重建。"""
         total = len(self.files)
         visible_slots = max(8, int(max(1, self.thumbnails.viewport().width()) / 126) + 2)
         window_size = min(total, max(30, visible_slots * 3))
@@ -507,6 +538,7 @@ class ReviewPage(QWidget):
         self.thumb_host.setFixedWidth(max(1, total * 126 - 10))
 
     def _schedule_thumbnail_fill(self, delay=80):
+        """编排缩略图与风险徽标的增量填充时序。"""
         self._thumbnail_render_timer.stop()
         self._thumbnail_risk_timer.stop()
         if self._thumbnail_render_queue:
@@ -515,11 +547,13 @@ class ReviewPage(QWidget):
             self._thumbnail_risk_timer.start(delay + 35)
 
     def _queue_thumbnail_render(self, index, filename):
+        """把待渲染缩略图去重后加入队列。"""
         if filename not in self._thumbnail_render_pending:
             self._thumbnail_render_pending.add(filename)
             self._thumbnail_render_queue.append((index, filename))
 
     def _process_thumbnail_render(self):
+        """每次定时器只渲染一张缩略图，保持界面响应。"""
         while self._thumbnail_render_queue:
             index, filename = self._thumbnail_render_queue.pop(0)
             self._thumbnail_render_pending.discard(filename)
@@ -532,6 +566,7 @@ class ReviewPage(QWidget):
             self._thumbnail_render_timer.start(20)
 
     def _thumbnail_icon(self, filename):
+        """解码并缓存缩略图图标，超过 80 张按插入顺序淘汰。"""
         cached = self._thumbnail_icons.pop(filename, None)
         if cached is not None:
             self._thumbnail_icons[filename] = cached
@@ -547,6 +582,7 @@ class ReviewPage(QWidget):
 
     @staticmethod
     def _thumbnail_risk_color(risk):
+        """按风险档位返回徽标颜色：未知/高/中/低。"""
         if risk is None:
             return "#D8DEE7"
         if risk >= config.REVIEW_HIGH_RISK:
@@ -556,6 +592,7 @@ class ReviewPage(QWidget):
         return "#31A56C"
 
     def _apply_thumbnail_risk(self, item, risk):
+        """更新缩略图角标的风险分与配色。"""
         color = self._thumbnail_risk_color(risk)
         item.setStyleSheet("QToolButton {border:2px solid transparent; border-radius:8px; background:#FFFFFF;} QToolButton:hover {border-color:#BFD8FF; background:#F8FBFF;} QToolButton:checked {border-color:#0A74FF; background:#EEF6FF;}")
         badge = item.findChild(QLabel, "thumbnailRiskBadge")
@@ -565,11 +602,13 @@ class ReviewPage(QWidget):
         badge.setStyleSheet(f"background:#FFFFFF;color:{color};border:1px solid {color};border-radius:9px;font-size:10px;font-weight:700;")
 
     def _queue_thumbnail_risk(self, index, filename):
+        """把待计算风险徽标的缩略图去重后加入队列。"""
         if filename not in self._thumbnail_risk_pending:
             self._thumbnail_risk_pending.add(filename)
             self._thumbnail_risk_queue.append((index, filename))
 
     def _process_thumbnail_risk(self):
+        """每次定时器只更新一个缩略图的风险徽标。"""
         while self._thumbnail_risk_queue:
             index, filename = self._thumbnail_risk_queue.pop(0)
             self._thumbnail_risk_pending.discard(filename)
@@ -583,6 +622,7 @@ class ReviewPage(QWidget):
             self._thumbnail_risk_timer.start(28)
 
     def _thumbnail_scroll_changed(self, value):
+        """滚动停止 70ms 后按视口中心决定新的缩略图窗口。"""
         if self._thumbnail_scroll_guard or not self.files:
             return
         step = 126
@@ -590,17 +630,20 @@ class ReviewPage(QWidget):
         self._thumbnail_scroll_timer.start(70)
 
     def _refresh_thumbnails_for_scroll(self):
+        """按滚动位置重建缩略图窗口并补齐渲染队列。"""
         self._ensure_thumbnail_strip(self._thumbnail_scroll_anchor)
         self._update_thumbnail_selection(scroll_current=False)
         self._schedule_thumbnail_fill(16)
 
     def _update_thumbnail_selection(self, scroll_current=True):
+        """同步缩略图选中态，必要时把当前项滚到视口中央。"""
         for index, item in self._thumbnail_buttons.items():
             item.setChecked(index == self.index)
         if scroll_current:
             QTimer.singleShot(0, self._scroll_to_current_thumbnail)
 
     def _scroll_to_current_thumbnail(self):
+        """把当前图片的缩略图滚到视口中央，并用守卫避免递归触发。"""
         if self.index not in self._thumbnail_buttons:
             return
         item = self._thumbnail_buttons[self.index]
@@ -611,6 +654,7 @@ class ReviewPage(QWidget):
         self._thumbnail_scroll_guard = False
 
     def _load(self):
+        """载入当前图片的 XML、备注与显示名，并刷新缩略图、类别筛选与清单。"""
         self._ensure_thumbnail_strip()
         total = len(self.files)
         current = self.index + 1 if total else 0
@@ -641,6 +685,7 @@ class ReviewPage(QWidget):
         self._refresh_annotation_drawer()
 
     def _prefetch_adjacent_images(self):
+        """空闲时预解码相邻图片，减少翻页等待。"""
         if not self.files:
             return
         nearby = [
@@ -669,13 +714,16 @@ class ReviewPage(QWidget):
             control.setEnabled(bool(current) and state != current)
 
     def select(self, index: int):
+        """先保存当前图片再跳到指定下标。"""
         self._save_current(silent=True); self.index = index; self._load()
     def move(self, delta: int):
+        """按步长翻页；越界时停在首尾。"""
         if self.files:
             target = max(0, min(len(self.files) - 1, self.index + delta))
             if target != self.index:
                 self._save_current(silent=True); self.index = target; self._load()
     def _available_categories(self):
+        """合并项目类别与当前图片已有类别，得到可选类别列表。"""
         project_categories = self.window.project.categories if self.window.project else []
         names = project_categories + [shape.get("name", "") for shape in self.canvas.shapes]
         result = []
@@ -686,6 +734,7 @@ class ReviewPage(QWidget):
         return result
 
     def _category_display_name(self, name):
+        """把英文机器标签翻译成项目配置的中文显示名。"""
         if self.window.project:
             return self.window.project.category_display_names().get(name, name)
         return name
@@ -710,6 +759,7 @@ class ReviewPage(QWidget):
         self.filter_collapse.set_collapsed(self.filter_collapsed)
 
     def _rebuild_category_filters(self, selected=None):
+        """重建右侧类别显隐勾选框，并保留原有勾选状态。"""
         select_all = selected is None
         if selected is None:
             selected = set()
@@ -726,6 +776,7 @@ class ReviewPage(QWidget):
         self._apply_category_filters()
 
     def _refresh_category_counts(self):
+        """在类别勾选框后追加当前图片该类的框数。"""
         if not hasattr(self, "_filter_checks"):
             return
         counts = Counter(str(shape.get("name", "")) for shape in self.canvas.shapes)
@@ -735,9 +786,11 @@ class ReviewPage(QWidget):
             checkbox.setText(f"{display_names.get(name, name)}  ({count})")
 
     def _apply_category_filters(self):
+        """把勾选结果写入画布的可见类别集合。"""
         self.canvas.set_visible_categories({name for name, item in self._filter_checks.items() if item.isChecked()})
 
     def _apply_selected_category(self):
+        """把选中框改为下拉所选的类别，并同步筛选与清单。"""
         name = str(self.category.currentData() or "").strip()
         if not name or not 0 <= self.canvas.selected_index < len(self.canvas.shapes):
             return
@@ -751,6 +804,7 @@ class ReviewPage(QWidget):
         self._refresh_annotation_drawer()
 
     def _set_drawing_category(self, name: str):
+        """记录新建形状的默认类别，并更新绘图工具提示。"""
         self._drawing_category = name
         self.canvas.set_default_label(name)
         display_name = self._category_display_name(name)
@@ -758,6 +812,7 @@ class ReviewPage(QWidget):
         self.polygon_tool.setToolTip(f"绘制多边形标注（P）\n当前类别：{display_name}；新框将沿用此类别")
 
     def _selection_changed(self, index: int):
+        """选中项变化时同步类别下拉、来源提示与清单高亮。"""
         if 0 <= index < len(self.canvas.shapes):
             name = self.canvas.shapes[index].get("name", "")
             self._sync_selected_category_editor(name)
@@ -767,6 +822,7 @@ class ReviewPage(QWidget):
         self._refresh_annotation_drawer()
 
     def _update_annotation_state_hint(self, index):
+        """显示选中框的来源（人工/已修订/模型预测）。"""
         if 0 <= index < len(self.canvas.shapes):
             self.annotation_state_hint.setText("标注来源：" + ImageCanvas.provenance_text(self.canvas.shapes[index]))
         else:
@@ -774,6 +830,7 @@ class ReviewPage(QWidget):
         self.annotation_state_hint.setVisible(bool(self.annotation_state_hint.text()))
 
     def _new_box_created(self, index: int):
+        """新形状落成后补齐类别：未配置类别时先要求配置或选择。"""
         records = self.window.project.category_records() if self.window.project else []
         if not records:
             self.canvas.delete_selected()
@@ -808,6 +865,7 @@ class ReviewPage(QWidget):
             self._autosave_timer.start(650)
 
     def _canvas_changed(self, _shapes):
+        """画布改动后标记为脏并启动 650ms 自动保存。"""
         self._current_dirty = True
         self._autosave_timer.start(650)
         self._update_annotation_state_hint(self.canvas.selected_index)
@@ -816,6 +874,7 @@ class ReviewPage(QWidget):
         self._refresh_annotation_drawer()
 
     def _autosave_current(self):
+        """自动保存定时器的回调。"""
         self._save_current(silent=False, automatic=True)
 
     def flush_autosave(self):
@@ -861,13 +920,16 @@ class ReviewPage(QWidget):
         self.notes.blockSignals(True); self.notes.clear(); self.notes.blockSignals(False)
 
     def _schedule_note_save(self):
+        """备注输入停止 500ms 后再落库。"""
         self._notes_timer.start(500)
 
     def _save_note(self):
+        """把当前图片的备注写入项目数据库。"""
         if self.files and self.window.project:
             self.window.project.set_note(self.files[self.index], self.notes.toPlainText())
 
     def _index_current_quality(self, filename, shapes=None):
+        """按当前标注重算风险并写入索引，同时更新内存缓存。"""
         if not self.window.project:
             return
         image_path = os.path.join(self.window.images_dir, filename)
@@ -882,6 +944,7 @@ class ReviewPage(QWidget):
         self._quality_known_files.add(filename)
 
     def _save_current(self, silent=False, automatic=False):
+        """把画布标注写回 XML 并更新风险索引；无改动时直接返回。"""
         if not self.files:
             return False
         self._autosave_timer.stop()
@@ -900,21 +963,26 @@ class ReviewPage(QWidget):
         return True
 
     def undo(self):
+        """撤销画布上一步修改并提示结果。"""
         self.window.status_message("已撤销上一步修改" if self.canvas.undo() else "没有可撤销的修改")
 
     def redo(self):
+        """重做被撤销的修改并提示结果。"""
         self.window.status_message("已重做上一步修改" if self.canvas.redo() else "没有可重做的修改")
 
     def delete_selected(self):
+        """删除选中标注并提示将自动保存。"""
         self.window.status_message("已删除选中标注，正在自动保存…" if self.canvas.delete_selected() else "请先用选择工具选中标注框")
 
     def save(self):
+        """手动保存并显示保存提示。"""
         changed = self._save_current(silent=True)
         message = "已保存" if changed else "已是最新保存"
         self.window.status_message(message)
         self._show_save_toast(message)
 
     def _show_versions(self):
+        """列出可恢复的标注版本；恢复前先把当前 XML 存档。"""
         if not self.files or not self.window.project:
             return
         filename = self.files[self.index]
@@ -944,12 +1012,14 @@ class ReviewPage(QWidget):
         self.window.status_message("已恢复所选标注版本")
 
     def _quick_review(self, status):
+        """快捷键通过/跳过的入口：焦点在输入控件时不触发。"""
         focused = QApplication.focusWidget()
         if isinstance(focused, (QLineEdit, QPlainTextEdit, QComboBox)):
             return
         self.set_status(status)
 
     def set_status(self, status):
+        """保存后更新审核状态；抽检模式下通过即标记抽检完成。"""
         if not self.files or not self.window.project:
             return
         filename = self.files[self.index]

@@ -13,6 +13,7 @@ class ImageCanvas(QWidget):
     polygon_created = Signal(int)
 
     def __init__(self):
+        """初始化画布状态：缩放/平移、当前工具、选中项与撤销重做栈。"""
         super().__init__()
         self.setMinimumSize(480, 360)
         self.setMouseTracking(True)
@@ -45,6 +46,7 @@ class ImageCanvas(QWidget):
 
     @staticmethod
     def _copy_shapes(shapes):
+        """深拷贝可选字段的标注列表，防止界面修改直接污染调用方数据。"""
         copied = []
         for shape in shapes:
             item = {"name": str(shape.get("name", "object")), "bbox": list(shape.get("bbox", (0, 0, 0, 0)))}
@@ -88,6 +90,7 @@ class ImageCanvas(QWidget):
         return QColor(cls.COLORS[value % len(cls.COLORS)])
 
     def set_content(self, path: str | None, shapes: list[dict]):
+        """载入一张图片与其标注并重置视图；位图最多缓存 12 张。"""
         self.path = path
         self.shapes = self._copy_shapes(shapes)
         if path and os.path.isfile(path):
@@ -117,6 +120,7 @@ class ImageCanvas(QWidget):
             self._pixmap_cache.pop(next(iter(self._pixmap_cache)))
 
     def set_tool(self, name: str):
+        """切换画布工具并清除未完成的拖拽与草稿形状。"""
         self.tool = name
         self._drag_point = self._draft_start = self._draft_end = None
         self._polygon_draft = []; self._polygon_hover = None
@@ -125,9 +129,11 @@ class ImageCanvas(QWidget):
         self.update()
 
     def set_default_label(self, name: str):
+        """设置新绘制形状使用的默认类别。"""
         self.default_label = name or "object"
 
     def set_visible_categories(self, categories: set[str] | None):
+        """设置画布类别可见性筛选；传入 None 表示全部可见。"""
         self.visible_categories = set(categories) if categories is not None else None
         if self.selected_index >= 0 and self.visible_categories is not None:
             if self.shapes[self.selected_index].get("name") not in self.visible_categories:
@@ -135,17 +141,20 @@ class ImageCanvas(QWidget):
         self.update()
 
     def set_hidden_indices(self, indices):
+        """设置被逐个隐藏的形状下标，越界下标会被忽略。"""
         self.hidden_indices = {int(index) for index in indices if 0 <= int(index) < len(self.shapes)}
         if self.selected_index in self.hidden_indices:
             self._set_selected(-1)
         self.update()
 
     def _is_visible(self, index: int):
+        """综合类别筛选与单项隐藏，判断某形状是否应绘制。"""
         if index in self.hidden_indices:
             return False
         return self.visible_categories is None or self.shapes[index].get("name") in self.visible_categories
 
     def _geometry(self):
+        """计算图片在画布上的目标矩形与像素缩放比，并夹紧缩放范围。"""
         if self._pixmap.isNull():
             return QRectF(), 1.0
         source = self._pixmap.size()
@@ -157,6 +166,7 @@ class ImageCanvas(QWidget):
         return target, target.width() / source.width()
 
     def _to_image(self, point: QPointF):
+        """把画布坐标换算成图片坐标；落在图片外时返回 None。"""
         target, scale = self._geometry()
         if target.isNull() or not target.contains(point):
             return None
@@ -173,10 +183,12 @@ class ImageCanvas(QWidget):
         )
 
     def _to_canvas(self, point: QPointF):
+        """把图片坐标换算成画布坐标。"""
         target, scale = self._geometry()
         return QPointF(target.x() + point.x() * scale, target.y() + point.y() * scale)
 
     def _shape_index_at(self, point: QPointF):
+        """自上而下拾取命中形状；多边形按闭合路径判定。"""
         for index in range(len(self.shapes) - 1, -1, -1):
             if not self._is_visible(index):
                 continue
@@ -202,16 +214,19 @@ class ImageCanvas(QWidget):
         return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
 
     def _polygon_points(self, index: int):
+        """返回某形状的多边形顶点（画布无关的图片坐标）。"""
         if not 0 <= index < len(self.shapes):
             return []
         return [QPointF(float(point[0]), float(point[1])) for point in self.shapes[index].get("points", []) if len(point) >= 2]
 
     @staticmethod
     def _bbox_for_points(points):
+        """用多边形顶点算出外接框，作为多边形的主 bbox。"""
         xs, ys = [point[0] for point in points], [point[1] for point in points]
         return [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
 
     def _polygon_vertex_at(self, point: QPointF):
+        """返回选中多边形上命中的顶点下标，未命中为 -1。"""
         if not 0 <= self.selected_index < len(self.shapes) or self.shapes[self.selected_index].get("type") != "polygon":
             return -1
         _, scale = self._geometry()
@@ -223,6 +238,7 @@ class ImageCanvas(QWidget):
 
     @staticmethod
     def _handle_positions(rect: QRectF):
+        """给出矩形八个缩放手柄的位置键与坐标。"""
         return {
             "nw": rect.topLeft(), "n": QPointF(rect.center().x(), rect.top()), "ne": rect.topRight(),
             "e": QPointF(rect.right(), rect.center().y()), "se": rect.bottomRight(),
@@ -231,6 +247,7 @@ class ImageCanvas(QWidget):
         }
 
     def _selected_canvas_rect(self):
+        """返回选中形状在画布坐标系下的矩形。"""
         if not 0 <= self.selected_index < len(self.shapes):
             return QRectF()
         target, scale = self._geometry()
@@ -253,9 +270,13 @@ class ImageCanvas(QWidget):
         }
 
     def _handle_at(self, point: QPointF):
+        """判断指针命中的是缩放手柄还是多边形顶点。"""
         if 0 <= self.selected_index < len(self.shapes) and self.shapes[self.selected_index].get("type") == "polygon":
             image_point = self._to_image(point)
-            return f"vertex:{self._polygon_vertex_at(image_point)}" if image_point and self._polygon_vertex_at(image_point) >= 0 else None
+            if image_point is None:
+                return None
+            vertex = self._polygon_vertex_at(image_point)
+            return f"vertex:{vertex}" if vertex >= 0 else None
         rect = self._selected_canvas_rect()
         if rect.isNull():
             return None
@@ -265,7 +286,24 @@ class ImageCanvas(QWidget):
                 return handle
         return None
 
-    def _set_select_cursor(self, point: QPointF):
+    def _begin_edit_drag(self, handle: str, image_point: QPointF):
+        """以命中的手柄/顶点开始一次缩放或顶点拖拽，选择与绘制模式共用。"""
+        self._drag_point = image_point
+        self._drag_index = self.selected_index
+        self._drag_shape = self._copy_shapes([self.shapes[self.selected_index]])[0]
+        self._drag_mode = "vertex" if handle.startswith("vertex:") else "resize"
+        self._resize_handle = handle
+        return True
+
+    def _press_selected_handle(self, point: QPointF, image_point: QPointF):
+        """绘制模式下优先响应选中形状的手柄或顶点；命中则接管本次按下。"""
+        if self.selected_index < 0 or image_point is None:
+            return False
+        handle = self._handle_at(point)
+        return self._begin_edit_drag(handle, image_point) if handle else False
+
+    def _set_select_cursor(self, point: QPointF, fallback=Qt.ArrowCursor):
+        """按命中的手柄类型切换光标，提示可缩放方向；未命中时用 fallback。"""
         handle = self._handle_at(point)
         if handle and handle.startswith("vertex:"):
             self.setCursor(Qt.CrossCursor)
@@ -276,9 +314,10 @@ class ImageCanvas(QWidget):
             "n": Qt.SizeVerCursor, "s": Qt.SizeVerCursor,
             "e": Qt.SizeHorCursor, "w": Qt.SizeHorCursor,
         }
-        self.setCursor(cursors.get(handle, Qt.ArrowCursor))
+        self.setCursor(cursors.get(handle, fallback))
 
     def _set_selected(self, index: int):
+        """更新选中项并在变化时发出 selection_changed。"""
         if self.selected_index != index:
             self.selected_index = index
             self.selection_changed.emit(index)
@@ -306,6 +345,7 @@ class ImageCanvas(QWidget):
         return True
 
     def _commit(self, before):
+        """把改动前的快照压入撤销栈、清空重做栈并通知外部；无变化时不动栈。"""
         if before == self.shapes:
             return
         self._history.append(before)
@@ -325,6 +365,7 @@ class ImageCanvas(QWidget):
         return True
 
     def delete_selected(self):
+        """删除当前选中形状，作为可撤销的一步。"""
         if not 0 <= self.selected_index < len(self.shapes):
             return False
         before = self._copy_shapes(self.shapes)
@@ -334,6 +375,7 @@ class ImageCanvas(QWidget):
         return True
 
     def undo(self):
+        """回退到上一个形状快照。"""
         if not self._history:
             return False
         self._redo.append(self._copy_shapes(self.shapes))
@@ -342,6 +384,7 @@ class ImageCanvas(QWidget):
         return True
 
     def redo(self):
+        """恢复被撤销的形状快照。"""
         if not self._redo:
             return False
         self._history.append(self._copy_shapes(self.shapes))
@@ -350,6 +393,7 @@ class ImageCanvas(QWidget):
         return True
 
     def apply_category(self, name: str, display_name: str | None = None):
+        """修改选中形状的类别，并清除已不再准确的模型置信度。"""
         if not 0 <= self.selected_index < len(self.shapes) or not name:
             return
         before = self._copy_shapes(self.shapes)
@@ -374,6 +418,7 @@ class ImageCanvas(QWidget):
         return True
 
     def paintEvent(self, _event):
+        """绘制图片、形状、类别标签与草稿；仅在缩放尺寸变化时重采样位图。"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing); painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
         bounds = self.rect().adjusted(0, 0, -1, -1)
@@ -462,6 +507,7 @@ class ImageCanvas(QWidget):
                     painter.drawEllipse(polygon_point, 4, 4)
 
     def mousePressEvent(self, event):
+        """按当前工具开始平移、画框、加点或选中/拖动形状。"""
         if event.button() == Qt.RightButton and self.tool == "polygon" and self._polygon_draft:
             self._polygon_draft = []
             self._polygon_hover = None
@@ -476,25 +522,23 @@ class ImageCanvas(QWidget):
         if self.tool == "pan":
             self._drag_point = point; self._drag_origin = QPointF(self.pan); self.setCursor(Qt.ClosedHandCursor)
         elif self.tool == "box" and image_point:
-            self._draft_start = self._draft_end = image_point
+            # 绘制模式下同样允许调整刚画好的框：先给选中项的手柄一次机会。
+            if not self._press_selected_handle(point, image_point):
+                self._draft_start = self._draft_end = image_point
         elif self.tool == "polygon" and image_point:
-            if len(self._polygon_draft) >= 3:
-                first = QPointF(self._polygon_draft[0][0], self._polygon_draft[0][1])
-                _, scale = self._geometry()
-                close_radius = max(6, 10 / max(scale, 0.01))
-                if abs(image_point.x() - first.x()) <= close_radius and abs(image_point.y() - first.y()) <= close_radius:
-                    self._finish_polygon_draft()
-                    event.accept(); return
-            self._polygon_draft.append([int(round(image_point.x())), int(round(image_point.y()))])
-            self._polygon_hover = image_point
+            # 正在落点时优先继续绘制，只有空闲状态下才把手柄点击让给顶点编辑。
+            if self._polygon_draft or not self._press_selected_handle(point, image_point):
+                if len(self._polygon_draft) >= 3:
+                    first = QPointF(self._polygon_draft[0][0], self._polygon_draft[0][1])
+                    _, scale = self._geometry()
+                    close_radius = max(6, 10 / max(scale, 0.01))
+                    if abs(image_point.x() - first.x()) <= close_radius and abs(image_point.y() - first.y()) <= close_radius:
+                        self._finish_polygon_draft()
+                        event.accept(); return
+                self._polygon_draft.append([int(round(image_point.x())), int(round(image_point.y()))])
+                self._polygon_hover = image_point
         elif self.tool == "select":
-            handle = self._handle_at(point)
-            if handle and image_point and self.selected_index >= 0:
-                self._drag_point = image_point
-                self._drag_index = self.selected_index
-                self._drag_shape = self._copy_shapes([self.shapes[self.selected_index]])[0]
-                self._drag_mode = "vertex" if handle.startswith("vertex:") else "resize"; self._resize_handle = handle
-            else:
+            if not self._press_selected_handle(point, image_point):
                 index = self._shape_index_at(image_point) if image_point else -1
                 self._set_selected(index)
                 if index >= 0 and image_point:
@@ -503,53 +547,72 @@ class ImageCanvas(QWidget):
                     self._drag_mode = "move"
         event.accept()
 
+    def _apply_edit_drag(self, current: QPointF):
+        """按当前拖拽模式把指针位置写回形状几何（缩放、顶点或整体移动）。"""
+        self._mark_manually_touched(self.shapes[self._drag_index])
+        x1, y1, x2, y2 = self._drag_shape["bbox"]
+        if self._drag_mode == "vertex":
+            vertex = int((self._resize_handle or "vertex:-1").split(":", 1)[1])
+            if 0 <= vertex < len(self.shapes[self._drag_index].get("points", [])):
+                points = self.shapes[self._drag_index]["points"]
+                points[vertex] = [int(round(current.x())), int(round(current.y()))]
+                self.shapes[self._drag_index]["bbox"] = self._bbox_for_points(points)
+        elif self._drag_mode == "resize":
+            left, top, right, bottom = min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
+            handle = self._resize_handle or ""
+            if "w" in handle: left = min(current.x(), right - 3)
+            if "e" in handle: right = max(current.x(), left + 3)
+            if "n" in handle: top = min(current.y(), bottom - 3)
+            if "s" in handle: bottom = max(current.y(), top + 3)
+            self.shapes[self._drag_index]["bbox"] = [int(left), int(top), int(right), int(bottom)]
+        else:
+            dx, dy = current.x() - self._drag_point.x(), current.y() - self._drag_point.y()
+            if self._drag_shape.get("type") == "polygon":
+                points = [[int(round(x + dx)), int(round(y + dy))] for x, y in self._drag_shape["points"]]
+                self.shapes[self._drag_index]["points"] = points
+                self.shapes[self._drag_index]["bbox"] = self._bbox_for_points(points)
+            else:
+                self.shapes[self._drag_index]["bbox"] = [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
+        self.update()
+
     def mouseMoveEvent(self, event):
+        """拖动时更新平移、草稿或形状几何，并在缩放路径上夹紧到图片内。"""
         point = event.position()
-        if self.tool == "pan" and self._drag_point is not None:
+        editing = self._drag_mode in ("resize", "vertex", "move") and self._drag_shape and self._drag_index >= 0
+        if editing:
+            # 选中形状的编辑优先于当前工具，绘制模式下也能直接拖手柄。
+            current = self._to_image_clamped(point) if self._drag_mode in ("resize", "vertex") else self._to_image(point)
+            if current:
+                # Keep scores only for untouched model predictions; reviewers
+                # should never see a stale confidence after changing geometry.
+                self._apply_edit_drag(current)
+        elif self.tool == "pan" and self._drag_point is not None:
             self.pan = self._drag_origin + (point - self._drag_point); self.update()
         elif self.tool == "box" and self._draft_start:
             self._draft_end = self._to_image(point) or self._draft_end; self.update()
         elif self.tool == "polygon" and self._polygon_draft:
             self._polygon_hover = self._to_image(point); self.update()
-        elif self.tool == "select" and self._drag_point and self._drag_shape and self._drag_index >= 0:
-            current = self._to_image_clamped(point) if self._drag_mode in ("resize", "vertex") else self._to_image(point)
-            if current:
-                # Keep scores only for untouched model predictions; reviewers
-                # should never see a stale confidence after changing geometry.
-                self._mark_manually_touched(self.shapes[self._drag_index])
-                x1, y1, x2, y2 = self._drag_shape["bbox"]
-                if self._drag_mode == "vertex":
-                    vertex = int((self._resize_handle or "vertex:-1").split(":", 1)[1])
-                    if 0 <= vertex < len(self.shapes[self._drag_index].get("points", [])):
-                        points = self.shapes[self._drag_index]["points"]
-                        points[vertex] = [int(round(current.x())), int(round(current.y()))]
-                        self.shapes[self._drag_index]["bbox"] = self._bbox_for_points(points)
-                elif self._drag_mode == "resize":
-                    left, top, right, bottom = min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
-                    handle = self._resize_handle or ""
-                    if "w" in handle: left = min(current.x(), right - 3)
-                    if "e" in handle: right = max(current.x(), left + 3)
-                    if "n" in handle: top = min(current.y(), bottom - 3)
-                    if "s" in handle: bottom = max(current.y(), top + 3)
-                    self.shapes[self._drag_index]["bbox"] = [int(left), int(top), int(right), int(bottom)]
-                else:
-                    dx, dy = current.x() - self._drag_point.x(), current.y() - self._drag_point.y()
-                    if self._drag_shape.get("type") == "polygon":
-                        points = [[int(round(x + dx)), int(round(y + dy))] for x, y in self._drag_shape["points"]]
-                        self.shapes[self._drag_index]["points"] = points
-                        self.shapes[self._drag_index]["bbox"] = self._bbox_for_points(points)
-                    else:
-                        self.shapes[self._drag_index]["bbox"] = [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
-                self.update()
         elif self.tool == "select":
             self._set_select_cursor(point)
+        elif self.tool in ("box", "polygon"):
+            # 悬停在选中形状的手柄上时给出缩放光标提示。
+            self._set_select_cursor(point, fallback=Qt.CrossCursor)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        """结束拖拽；足够大的框会落成新形状并记入撤销栈。"""
         if event.button() != Qt.LeftButton:
             return super().mouseReleaseEvent(event)
-        if self.tool == "pan":
+        if self.tool == "pan" and self._drag_origin is not None:
             self._drag_point = self._drag_origin = None; self.setCursor(Qt.OpenHandCursor)
+        elif self._drag_shape and self._drag_index >= 0:
+            # 缩放/顶点/移动可能发生在任意工具下，统一在这里收尾。
+            before = self._copy_shapes(self.shapes)
+            before[self._drag_index] = self._drag_shape
+            self._drag_point = self._drag_shape = None
+            self._drag_index = -1; self._drag_mode = self._resize_handle = None
+            self._commit(before)
+            self._set_select_cursor(event.position(), fallback=Qt.CrossCursor if self.tool in ("box", "polygon") else Qt.ArrowCursor)
         elif self.tool == "box" and self._draft_start and self._draft_end:
             x1, y1 = self._draft_start.x(), self._draft_start.y(); x2, y2 = self._draft_end.x(), self._draft_end.y()
             self._draft_start = self._draft_end = None
@@ -558,15 +621,10 @@ class ImageCanvas(QWidget):
                 self.shapes.append({"name": self.default_label, "origin": "manual", "bbox": [int(min(x1, x2)), int(min(y1, y2)), int(max(x1, x2)), int(max(y1, y2))]})
                 self._set_selected(len(self.shapes) - 1); self._commit(before); self.box_created.emit(self.selected_index)
             self.update()
-        elif self.tool == "select" and self._drag_shape and self._drag_index >= 0:
-            before = self._copy_shapes(self.shapes)
-            before[self._drag_index] = self._drag_shape
-            self._drag_point = self._drag_shape = None
-            self._drag_index = -1; self._drag_mode = self._resize_handle = None
-            self._commit(before)
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
+        """以指针位置为锚点缩放画布，使锚点下的图片内容保持不动。"""
         if self._pixmap.isNull():
             return super().wheelEvent(event)
         point, before = event.position(), self._to_image(event.position())
@@ -578,6 +636,7 @@ class ImageCanvas(QWidget):
         self.update(); event.accept()
 
     def mouseDoubleClickEvent(self, event):
+        """双击结束多边形绘制，或在其它工具下复位缩放到适应窗口。"""
         if self.tool == "polygon" and event.button() == Qt.LeftButton:
             self._finish_polygon_draft()
             event.accept(); return

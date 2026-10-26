@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class WorkflowStepTemplate:
+    """流程中的一个步骤：稳定 id、标题、说明与是否为可选步骤。"""
     id: str
     title: str
     detail: str
@@ -15,6 +16,7 @@ class WorkflowStepTemplate:
 
 @dataclass(frozen=True)
 class WorkflowTemplate:
+    """一套完整流程预设：步骤、连线与是否可执行。"""
     id: str
     title: str
     subtitle: str
@@ -87,12 +89,15 @@ CUSTOM_WORKFLOW = WorkflowTemplate(
 
 
 class WorkflowTemplateRegistry:
+    """按 id 索引内置流程预设；未知 id 回退到快速标注。"""
     _templates = {item.id: item for item in (QUICK_WORKFLOW, OWN_MODEL_WORKFLOW, CUSTOM_WORKFLOW)}
 
     def templates(self) -> tuple[WorkflowTemplate, ...]:
+        """返回全部内置流程预设。"""
         return tuple(self._templates.values())
 
     def get(self, template_id: str) -> WorkflowTemplate:
+        """按 id 取预设，未知 id 回退到快速标注。"""
         return self._templates.get(template_id, QUICK_WORKFLOW)
 
 
@@ -106,9 +111,11 @@ class WorkflowGraph:
 
     @classmethod
     def preset(cls, template: WorkflowTemplate) -> "WorkflowGraph":
+        """从预设生成默认可执行流程图。"""
         return cls(template.id, tuple(step.id for step in template.steps), template.edges)
 
     def validate(self, template: WorkflowTemplate) -> tuple[str, ...]:
+        """校验流程图：必经步骤齐全、连线合法、无环且方向正确，返回错误列表。"""
         errors: list[str] = []
         known = {step.id: step for step in template.steps}
         nodes = set(self.nodes)
@@ -157,12 +164,14 @@ class WorkflowGraph:
         return tuple(dict.fromkeys(errors))
 
     def without_optional(self, template: WorkflowTemplate, step_id: str) -> "WorkflowGraph":
+        """移除一个可选步骤及其连线，非可选步骤会报错。"""
         if not any(step.id == step_id and step.optional for step in template.steps):
             raise ValueError("只能移除可选步骤")
         return WorkflowGraph(self.template_id, tuple(node for node in self.nodes if node != step_id),
                              tuple(edge for edge in self.edges if step_id not in edge))
 
     def with_optional(self, template: WorkflowTemplate, step_id: str) -> "WorkflowGraph":
+        """重新加入一个可选步骤及其连线。"""
         if not any(step.id == step_id and step.optional for step in template.steps):
             raise ValueError("只能添加可选步骤")
         nodes = tuple(step.id for step in template.steps if step.id in self.nodes or step.id == step_id)
@@ -174,6 +183,7 @@ class WorkflowGraph:
 
 @dataclass
 class WorkflowProjectState:
+    """项目工作流状态：已应用流程图、草稿、节点位置与补扫策略。"""
     applied_template_id: str = QUICK_WORKFLOW.id
     draft_template_id: str = QUICK_WORKFLOW.id
     layouts: dict[str, dict[str, tuple[int, int]]] = field(default_factory=dict)
@@ -182,6 +192,7 @@ class WorkflowProjectState:
     quick_recovery_policy: str | None = None
 
     def draft(self, template: WorkflowTemplate) -> WorkflowGraph:
+        """取某预设的草稿图，没有草稿时用预设本身。"""
         return self.drafts.get(template.id, WorkflowGraph.preset(template))
 
 
@@ -193,6 +204,7 @@ class WorkflowComposerSettings:
 
     @classmethod
     def load(cls, project) -> WorkflowProjectState:
+        """从项目 metadata 恢复工作流状态；任何解码失败都回退到默认状态。"""
         state = WorkflowProjectState()
         if not project:
             return state
@@ -235,6 +247,7 @@ class WorkflowComposerSettings:
 
     @classmethod
     def _decode_graph(cls, key: str, data) -> WorkflowGraph | None:
+        """把 JSON 结构解码成流程图，结构不对时返回 None。"""
         if not isinstance(data, dict):
             return None
         try:
@@ -246,7 +259,9 @@ class WorkflowComposerSettings:
 
     @classmethod
     def save(cls, project, state: WorkflowProjectState) -> None:
+        """把已应用图、草稿与节点位置序列化进项目 metadata。"""
         def encode(graph: WorkflowGraph) -> dict:
+            """把流程图编码成可 JSON 序列化的 nodes/edges 结构。"""
             return {"nodes": list(graph.nodes), "edges": [list(edge) for edge in graph.edges]}
         project.set_metadata_value(cls.METADATA_KEY, json.dumps({
             "applied_template": state.applied_template_id,

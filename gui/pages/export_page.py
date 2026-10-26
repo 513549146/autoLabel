@@ -12,6 +12,7 @@ from application.training_worker import run_training_process
 from ..ui import *
 
 class ExportPage(QWidget):
+    """模型微调页：左侧导出已通过数据，右侧可选地在独立进程中训练。"""
     log_message = Signal(str)
     training_progress = Signal(int, int, str)
     training_stage = Signal(str)
@@ -21,6 +22,7 @@ class ExportPage(QWidget):
     operation_cancelled = Signal(str)
 
     def __init__(self, window):
+        """构建导出与训练两张卡片、日志区和训练轮询定时器，并连接全部信号。"""
         super().__init__(); self.window = window; self._worker_thread = None; self._data_yaml = ""; self._last_export_id = 0
         self._active_operation = None
         self._stop_event = threading.Event()
@@ -59,9 +61,11 @@ class ExportPage(QWidget):
         self.operation_cancelled.connect(self._operation_cancelled)
 
     def _export_card(self):
+        """构建“1 · 导出数据集”卡片：输出目录、验证集比例与导出按钮。"""
         surface = card(); grid = QGridLayout(surface); grid.setContentsMargins(20, 20, 20, 20); grid.setSpacing(12); grid.addWidget(label("1 · 导出数据集", "section"), 0, 0, 1, 2); grid.addWidget(label("仅导出“已通过 · 训练候选”的图片与 XML 标注。", "muted"), 1, 0, 1, 2); grid.addWidget(label("输出目录", "muted"), 2, 0); self.out = QLineEdit(); self.out.setReadOnly(True); self.out.setPlaceholderText("打开项目后自动设为项目内 yolo_dataset 文件夹"); grid.addWidget(self.out, 2, 1); grid.addWidget(label("验证集比例", "muted"), 3, 0); self.ratio = QLineEdit("0.2"); grid.addWidget(self.ratio, 3, 1); self.export_status = label("尚未导出", "muted"); grid.addWidget(self.export_status, 4, 0, 1, 2); self.export_run = button("导出数据集", primary=True); self.export_run.clicked.connect(self._start_export); grid.addWidget(self.export_run, 5, 0, 1, 2); return surface
 
     def sync_project(self, project_root):
+        """跟随项目刷新输出目录与 data.yaml，并据其存在与否启用训练按钮。"""
         self.out.setText(os.path.join(project_root, "yolo_dataset") if project_root else "")
         self._data_yaml = os.path.join(project_root, "yolo_dataset", "data.yaml") if project_root else ""
         ready = bool(self._data_yaml and os.path.isfile(self._data_yaml))
@@ -73,6 +77,7 @@ class ExportPage(QWidget):
         self.export_run.setEnabled(bool(project_root) and not self._is_busy())
 
     def _train_card(self):
+        """构建“2 · 微调训练”卡片：预训练模型、轮数、进度与启停按钮。"""
         surface = card(); grid = QGridLayout(surface); grid.setContentsMargins(20, 20, 20, 20); grid.setSpacing(12); grid.addWidget(label("2 · 微调训练", "section"), 0, 0, 1, 2); grid.addWidget(label("训练在后台运行；每次成功训练都会保留独立的模型版本。", "muted"), 1, 0, 1, 2); grid.addWidget(label("预训练模型", "muted"), 2, 0); self.train_model = FlatComboBox(); self.train_model.addItems(["yolov8n.pt", "yolov8s.pt", "yolo11n.pt"]); grid.addWidget(self.train_model, 2, 1); grid.addWidget(label("训练轮数", "muted"), 3, 0); self.epochs = QLineEdit("100"); grid.addWidget(self.epochs, 3, 1); self.train_status = label("请先导出数据集", "muted"); self.train_status.setWordWrap(True); grid.addWidget(self.train_status, 4, 0, 1, 2)
         self.train_progress = QProgressBar(); self.train_progress.setTextVisible(False); self.train_progress.setFixedHeight(6); self.train_progress.setToolTip("当前轮训练批次进度；数据扫描和验证期间会显示等待状态"); self.train_progress.setRange(0, 100); self.train_progress.setValue(0); grid.addWidget(self.train_progress, 5, 0, 1, 2)
         self.train_run = button("开始训练", primary=True); self.train_run.clicked.connect(self._start_training); self.train_run.setEnabled(False); grid.addWidget(self.train_run, 6, 0, 1, 2)
@@ -80,10 +85,12 @@ class ExportPage(QWidget):
         return surface
 
     def _is_busy(self):
+        """任一导出线程或训练子进程仍在运行时视为忙，避免并发操作。"""
         return bool(self._active_operation or (self._worker_thread and self._worker_thread.is_alive())
                     or (self._training_process and self._training_process.is_alive()))
 
     def _start_export(self):
+        """校验训练候选并确认覆盖后，在工作线程导出数据集。"""
         if self._is_busy() or not self.window.project:
             return
         files = self.window.project_images(STATUS_APPROVED)
@@ -107,6 +114,7 @@ class ExportPage(QWidget):
         self._worker_thread.start()
 
     def _run_export(self, files, categories, ratio, output):
+        """工作线程入口：调用导出服务并把结果或错误发回主线程。"""
         try:
             summary = self._training_service.export_dataset(self.window.images_dir, self.window.annotations_dir, files, output, categories, ratio)
             self.operation_finished.emit("export", summary)
@@ -114,6 +122,7 @@ class ExportPage(QWidget):
             self.operation_failed.emit(f"导出失败：{error}")
 
     def _start_training(self):
+        """用 spawn 上下文创建训练子进程与停止事件，并以 Pipe 回传进度。"""
         if self._is_busy() or not self.window.project:
             return
         data_yaml = self._data_yaml or os.path.join(self.out.text(), "data.yaml")
@@ -166,6 +175,7 @@ class ExportPage(QWidget):
             sender.close()
 
     def _stop_training(self):
+        """先请求协作停止；若 5 秒内无响应则由轮询逻辑强制终止进程树。"""
         if self._active_operation != "train" or self._stop_event.is_set():
             return
         self._stop_event.set()
@@ -176,6 +186,7 @@ class ExportPage(QWidget):
         self._refresh_training_status()
 
     def _poll_training_process(self):
+        """排空管道消息、处理超时强制终止，并在子进程退出后分派最终结果。"""
         process, connection = self._training_process, self._training_connection
         if process is None or connection is None:
             return
@@ -233,6 +244,7 @@ class ExportPage(QWidget):
             self._operation_error(f"训练进程意外退出（退出码 {exit_code}）；请查看运行记录。")
 
     def _terminate_training_tree(self):
+        """用 psutil 终止训练进程及其 DataLoader 子进程，先 terminate 再 kill。"""
         process = self._training_process
         if process is None or not process.is_alive():
             return
@@ -256,11 +268,13 @@ class ExportPage(QWidget):
             process.terminate()
 
     def _shutdown_training_process(self):
+        """应用退出时收尾未结束的训练进程，避免残留子进程。"""
         if self._training_process is not None and self._training_process.is_alive():
             self._stop_event.set()
             self._terminate_training_tree()
 
     def _finish_training_result(self, result):
+        """把 best.pt 复制进项目 models/ 并附上运行信息后走完成流程。"""
         try:
             project_root = self._training_project.project_dir
             models_dir = os.path.join(project_root, "models")
@@ -276,6 +290,7 @@ class ExportPage(QWidget):
             self._operation_error(f"训练完成，但保存模型失败：{error}")
 
     def _operation_complete(self, operation, result):
+        """统一收尾导出与训练：登记记录、刷新状态；被停止的训练不登记模型。"""
         if operation == "train" and self._stop_event.is_set():
             self._operation_cancelled("训练已停止；未将此次结果设为默认模型。")
             return
@@ -305,6 +320,7 @@ class ExportPage(QWidget):
         self._set_busy(False)
 
     def _operation_error(self, message):
+        """统一处理失败：复位进度、恢复按钮并弹出提示。"""
         self._worker_thread = None
         was_training = self._active_operation == "train"
         self._active_operation = None
@@ -319,6 +335,7 @@ class ExportPage(QWidget):
         ios_alert(self, "任务未完成", message, confirm_text="知道了", destructive=True)
 
     def _operation_cancelled(self, message):
+        """统一处理取消：复位进度并说明结果未启用。"""
         self._worker_thread = None
         self._active_operation = None
         self._training_timer.stop()
@@ -330,21 +347,25 @@ class ExportPage(QWidget):
         self._set_busy(False)
 
     def _set_busy(self, busy):
+        """按忙碌状态统一切换导出/训练按钮与输入控件可用性。"""
         self.export_run.setEnabled(bool(self.window.project_root) and not busy)
         self.train_run.setEnabled(bool(self._data_yaml and os.path.isfile(self._data_yaml)) and not busy)
         self.train_stop.setEnabled(self._active_operation == "train" and not self._stop_event.is_set())
         self.ratio.setEnabled(not busy); self.train_model.setEnabled(not busy); self.epochs.setEnabled(not busy)
 
     def _append_log(self, message):
+        """追加一行运行记录并自动滚动到底部。"""
         self.log.appendPlainText(str(message))
         scrollbar = self.log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
     def _clear_log(self):
+        """清空导出与训练的运行记录。"""
         self.log.clear()
         self.window.status_message("已清空导出与训练运行记录")
 
     def _on_training_progress(self, current, total, detail):
+        """每轮结束时记录进度行并刷新状态区。"""
         if self._active_operation != "train":
             return
         line = f"第 {current}/{total} 轮完成" + (f" · {detail}" if detail else "")
@@ -354,6 +375,7 @@ class ExportPage(QWidget):
         self._refresh_training_status()
 
     def _on_training_stage(self, message):
+        """记录训练阶段；扫描/加载阶段显示不确定进度条。"""
         if self._active_operation != "train" or self._stop_event.is_set():
             return
         if message != self._training_stage:
@@ -365,6 +387,7 @@ class ExportPage(QWidget):
         self._refresh_training_status()
 
     def _on_training_batch(self, epoch, total_epochs, batch, total_batches):
+        """按批次更新进度条，并按 10% 分桶写日志以免刷屏。"""
         if self._active_operation != "train" or self._stop_event.is_set():
             return
         if epoch != self._progress_epoch:
@@ -381,6 +404,7 @@ class ExportPage(QWidget):
         self._refresh_training_status()
 
     def _refresh_training_status(self):
+        """轮询子进程、刷新已运行时长，并在长时间无进展时输出等待提示。"""
         if self._active_operation != "train":
             return
         if not self._training_polling:

@@ -13,7 +13,9 @@ from .pages import AutoPage, ExportPage, LibraryPage, ReviewPage, WelcomePage, W
 
 
 class Workbench(QMainWindow):
+    """无边框主窗口外壳：侧栏项目区、导航、页面栈与项目生命周期管理。"""
     def __init__(self):
+        """搭建侧栏与页面栈，装载各业务页，并异步尝试恢复上次项目。"""
         super().__init__();
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window); self.setWindowTitle(" "); self.setWindowIcon(QIcon()); self.resize(1420, 900); self.setMinimumSize(1100, 720)
         self.workspace = WorkspaceStore()
@@ -47,6 +49,7 @@ class Workbench(QMainWindow):
         QTimer.singleShot(0, self.restore_last_project)
 
     def project_menu(self):
+        """弹出项目菜单：新建/打开/关闭/删除项目与最近项目切换。"""
         menu = QMenu(self)
         menu.addAction("新建项目", self.new_project)
         menu.addAction("导入 / 打开项目", self.open_project)
@@ -75,6 +78,7 @@ class Workbench(QMainWindow):
             self.show_page("welcome")
 
     def restore_last_project(self):
+        """启动时尝试自动恢复上次打开的项目。"""
         path = self.workspace.last_project()
         if path:
             self.load_project(path, restoring=True)
@@ -183,6 +187,7 @@ class Workbench(QMainWindow):
         genuine persistent lock still surfaces to the user after bounded retries.
         """
         def retry_readonly(func, path, exc_info):
+            """清理只读文件属性后重试删除，用于处理 Windows 下的只读残留。"""
             error = exc_info[1]
             if isinstance(error, PermissionError):
                 try:
@@ -223,9 +228,11 @@ class Workbench(QMainWindow):
             self.status_message("已关闭项目；文件仍保留在原位置")
 
     def toggle_maximized(self):
+        """在最大化与还原之间切换窗口。"""
         self.showNormal() if self.isMaximized() else self.showMaximized()
 
     def new_project(self):
+        """让用户选择位置并创建新的项目目录结构。"""
         name, ok = ios_text_input(self, "新建项目", "项目名称：", placeholder="例如：街景行人标注", confirm_text="下一步")
         if not ok or not name.strip(): return
         parent = QFileDialog.getExistingDirectory(self, "选择项目保存位置", config.BASE_DIR)
@@ -238,10 +245,12 @@ class Workbench(QMainWindow):
         self.load_project(root, open_review=False)
 
     def open_project(self):
+        """选择已有项目目录并打开。"""
         root = QFileDialog.getExistingDirectory(self, "导入 / 打开项目", config.BASE_DIR)
         if root: self.load_project(root)
 
     def load_project(self, root: str, open_review=True, restoring=False):
+        """解析项目清单、建目录、导入文件夹并切换到审核页；失败走恢复流程。"""
         root = os.path.abspath(root)
         try:
             manifest = load_project_manifest(root)
@@ -280,6 +289,7 @@ class Workbench(QMainWindow):
         return True
 
     def _project_open_failed(self, root, error, restoring=False):
+        """打开失败时给出恢复选项，并在自动恢复场景下清掉上次项目记录。"""
         if restoring:
             # Keep the recent entry, but do not retry the same broken project on
             # every launch unless the user explicitly opens it again.
@@ -302,6 +312,7 @@ class Workbench(QMainWindow):
             self.refresh_recent_projects()
 
     def _project_recovery_dialog(self, root, reason):
+        """弹出恢复对话框，返回 choose/view/forget/home 之一。"""
         dialog = QDialog(self)
         dialog.setObjectName("iosDialog")
         dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
@@ -328,6 +339,7 @@ class Workbench(QMainWindow):
         return {1: "choose", 2: "view", 3: "forget"}.get(dialog.exec(), "home")
 
     def _show_read_only_project(self, root):
+        """以只读方式浏览项目图片与 XML，不做任何写操作。"""
         manifest = load_project_manifest(root)
         try:
             relative_images = manifest["directories"].get("images", "images") if manifest else "images"
@@ -352,6 +364,7 @@ class Workbench(QMainWindow):
         index = 0
 
         def show_image(offset=0):
+            """按当前下标刷新只读浏览中的图片与标注。"""
             nonlocal index
             if not filenames:
                 position.setText("项目内没有图片")
@@ -377,6 +390,7 @@ class Workbench(QMainWindow):
         dialog.exec()
 
     def use_folders(self, images: str, annotations: str, project_root: str | None = None):
+        """把图片/标注目录接入当前项目并创建 ProjectStore，返回新导入的图片数。"""
         root = os.path.abspath(project_root or self.project_root)
         try:
             paths_are_isolated = root and all(os.path.commonpath((root, os.path.abspath(path))) == root for path in (images, annotations))
@@ -411,6 +425,7 @@ class Workbench(QMainWindow):
         return self.use_folders(self.images_dir, self.annotations_dir, self.project_root)
 
     def project_images(self, status=None):
+        """按状态筛选返回项目图片文件名，默认返回全部。"""
         if not self.images_dir: return []
         files = core.list_images(self.images_dir)
         if status is None or not self.project:
@@ -419,6 +434,7 @@ class Workbench(QMainWindow):
         return [file for file in files if statuses.get(file) == status]
 
     def refresh_all(self):
+        """刷新项目状态、侧栏与全部页面。"""
         files = self.project_images(); summary = self.project.summary(files) if self.project else {}
         self.nav["auto"].set_count(str(len(files)) if files else "")
         self.nav["review"].set_count(str(summary.get(STATUS_NEEDS_REVIEW, 0)) if summary.get(STATUS_NEEDS_REVIEW, 0) else "")
@@ -430,6 +446,7 @@ class Workbench(QMainWindow):
             self.library.refresh()
 
     def _render_current_project(self):
+        """刷新侧栏项目卡片上的名称、路径与状态。"""
         if not self.project_root:
             self.current_project.setText("还未打开项目")
             self.current_project_path.setText("新建或打开一个项目开始")
@@ -448,6 +465,7 @@ class Workbench(QMainWindow):
         self.setWindowTitle(f"autoLabel · {self.project_name}")
 
     def show_page(self, key: str):
+        """切换页面栈并同步侧栏选中项。"""
         if self.pages.currentWidget() is self.workflow and key != "workflow":
             self.workflow.flush_draft()
         self.pages.setCurrentWidget(self.keys[key])
@@ -458,11 +476,13 @@ class Workbench(QMainWindow):
         if key == "approved": self.library.refresh()
 
     def open_workflow(self):
+        """打开当前项目的工作流配置页。"""
         if self.project:
             self.show_page("workflow")
             QTimer.singleShot(0, self.workflow.composer.board.fit_graph)
 
     def _workflow_changed(self, template_id: str):
+        """记录用户切换的流程模板并同步到自动标注页。"""
         self.active_workflow_id = template_id
         self.auto.set_active_workflow(template_id)
         self.project_workflow.setText(f"当前工作流 · {self.workflow.registry.get(template_id).title}  ›")
@@ -472,11 +492,15 @@ class Workbench(QMainWindow):
         self.review.open_spot_check(filenames)
         self.pages.setCurrentWidget(self.review); self.nav["review"].setChecked(True)
 
-    def status_message(self, text: str): self.statusBar().showMessage(text, 4000)
+    """在状态栏短暂显示一条提示。"""
+    def status_message(self, text: str):
+        """在状态栏短暂显示一条提示。"""
+        self.statusBar().showMessage(text, 4000)
 
     def closeEvent(self, event):
         # Persist the active project at the moment the user closes the app as
         # well as when it was opened, so startup can reliably restore it.
+        """关闭前保存页面状态，并在有训练任务运行时做收尾处理。"""
         if self.project_root:
             self.workflow.flush_draft()
             self.workspace.remember_project(self.project_root, self.project_name)
@@ -484,6 +508,7 @@ class Workbench(QMainWindow):
 
 
 def main():
+    """创建 QApplication、应用全局样式并进入事件循环。"""
     QApplication.setAttribute(Qt.AA_DontUseNativeDialogs, True)
     app = QApplication.instance() or QApplication([])
     app.setWindowIcon(QIcon())

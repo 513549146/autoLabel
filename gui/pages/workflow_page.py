@@ -10,9 +10,11 @@ from ..workflow_composer import WorkflowComposer
 
 
 class WorkflowPage(QWidget):
+    """项目工作流页：选择预设、在画布上编辑执行图、校验并应用到当前项目。"""
     workflow_changed = Signal(str)
 
     def __init__(self, window):
+        """构建预设库、画布与属性检查器三栏布局，并连接组合器的信号。"""
         super().__init__()
         self.window = window
         self.registry = WorkflowTemplateRegistry()
@@ -85,6 +87,7 @@ class WorkflowPage(QWidget):
         layout.addLayout(content, 1)
 
     def _build_library(self):
+        """创建左侧预设与可选步骤开关面板。"""
         panel = card()
         panel.setFixedWidth(202)
         layout = QVBoxLayout(panel)
@@ -137,6 +140,7 @@ class WorkflowPage(QWidget):
         return panel
 
     def _build_inspector(self):
+        """创建右侧属性面板，展示模板说明、选中步骤、连线与快速标注选项。"""
         panel = card()
         panel.setFixedWidth(245)
         layout = QVBoxLayout(panel)
@@ -191,6 +195,7 @@ class WorkflowPage(QWidget):
         return panel
 
     def sync_project(self, root: str | None = None):
+        """从项目读取草稿与恢复策略并重绘界面；会发出 workflow_changed 通知外部。"""
         self._save_timer.stop()
         self.project_state = WorkflowComposerSettings.load(self.window.project)
         self.active_template_id = self.project_state.draft_template_id
@@ -208,12 +213,14 @@ class WorkflowPage(QWidget):
         self.workflow_changed.emit(self.project_state.applied_template_id)
 
     def _select_template(self, template_id: str):
+        """切换当前编辑的模板并标记草稿变更。"""
         self.active_template_id = template_id
         self.project_state.draft_template_id = template_id
         self._render_template()
         self._draft_changed()
 
     def _render_template(self):
+        """按当前模板与画布状态刷新预设高亮、说明文案、可选步骤与连线列表。"""
         template = self.registry.get(self.active_template_id)
         graph = self.composer.board.graph
         for key, item in self.preset_buttons.items():
@@ -244,12 +251,14 @@ class WorkflowPage(QWidget):
         self._render_edges()
 
     def _render_applied(self):
+        """更新顶部已应用徽标，并同步主窗口的工作流入口文案。"""
         title = self.registry.get(self.project_state.applied_template_id).title
         self.applied_badge.setText(f"已应用：{title}")
         if hasattr(self.window, "project_workflow"):
             self.window.project_workflow.setText(f"当前工作流 · {title}  ›")
 
     def _render_edges(self):
+        """用步骤中文名重建连线下拉列表的选项。"""
         graph = self.composer.board.graph
         names = {step.id: step.title for step in self.registry.get(self.active_template_id).steps}
         self.edge_list.clear()
@@ -257,15 +266,18 @@ class WorkflowPage(QWidget):
             self.edge_list.addItem(f"{names[source]} → {names[target]}", (source, target))
 
     def _layout_changed(self, template_id, layouts):
+        """记录画布节点布局并触发草稿变更。"""
         self.project_state.layouts = layouts
         self._draft_changed()
 
     def _graph_changed(self, template_id: str, graph: WorkflowGraph):
+        """记录该模板的最新执行图，重新渲染并触发草稿变更。"""
         self.project_state.drafts[template_id] = graph
         self._render_template()
         self._draft_changed()
 
     def _select_step(self, step_id: str):
+        """在属性面板中显示所选步骤的标题与职责说明。"""
         step = next((item for item in self.registry.get(self.active_template_id).steps
                      if item.id == step_id), None)
         if step:
@@ -273,9 +285,11 @@ class WorkflowPage(QWidget):
             self.step_detail.setText(step.detail)
 
     def _toggle_optional(self, step_id: str, enabled: bool):
+        """启用或停用某个可选步骤。"""
         self.composer.set_optional_enabled(step_id, enabled)
 
     def _remove_edge(self):
+        """删除下拉框中选中的连线，被拒绝时在状态栏提示。"""
         edge = self.edge_list.currentData()
         if edge:
             errors = self.composer.remove_edge(*edge)
@@ -283,6 +297,7 @@ class WorkflowPage(QWidget):
                 self._show_errors("；".join(errors))
 
     def _reset_draft(self):
+        """丢弃当前模板的布局与草稿，恢复为默认执行图。"""
         template = self.registry.get(self.active_template_id)
         self.project_state.layouts.pop(template.id, None)
         self.project_state.drafts.pop(template.id, None)
@@ -292,6 +307,7 @@ class WorkflowPage(QWidget):
         self._draft_changed()
 
     def _validate(self):
+        """校验执行图是否有环且必经步骤完整；返回是否通过并在状态栏给出原因。"""
         errors = self.composer.board.graph.validate(self.registry.get(self.active_template_id))
         if errors:
             self._show_errors("；".join(errors))
@@ -300,16 +316,19 @@ class WorkflowPage(QWidget):
         return not errors
 
     def _show_errors(self, message: str):
+        """把校验错误写入页面状态文案并同步到主窗口状态栏。"""
         self.state.setText(f"校验失败：{message}")
         self.window.status_message(message)
 
     def _draft_changed(self, *_):
+        """把当前恢复策略写回状态，并延迟 450 毫秒保存草稿。"""
         self.project_state.quick_recovery_policy = self.recovery_policy.currentData()
         self.state.setText("草稿已修改，尚未应用")
         if self.window.project:
             self._save_timer.start(450)
 
     def _apply(self):
+        """校验通过后把草稿固化为已应用工作流并写入项目设置；批次运行中则拒绝应用。"""
         if not self.window.project or not self.registry.get(self.active_template_id).executable:
             return
         worker = self.window.auto._worker_thread
@@ -334,10 +353,12 @@ class WorkflowPage(QWidget):
         self.window.status_message(f"已应用{self.registry.get(self.active_template_id).title}工作流")
 
     def _save_state(self):
+        """把工作流草稿设置持久化到当前项目。"""
         if self.window.project:
             WorkflowComposerSettings.save(self.window.project, self.project_state)
 
     def flush_draft(self):
+        """若有待保存的草稿，立即落盘；用于离开页面时避免丢失编辑。"""
         if self._save_timer.isActive():
             self._save_timer.stop()
             self._save_state()

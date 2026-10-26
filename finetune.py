@@ -11,6 +11,7 @@ IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 
 
 def _read_voc(xml_path):
+    """读取单个 VOC XML，返回图片宽高与 (name, x1, y1, x2, y2) 列表。"""
     tree = ET.parse(xml_path)
     root = tree.getroot()
     size = root.find("size")
@@ -121,6 +122,7 @@ def train_yolo(data, model_name="yolov8s.pt", epochs=100, imgsz=640, batch=16, d
     log(f"加载预训练模型: {model_name}")
 
     def on_fit_epoch_end(trainer):
+        """每轮结束打印 mAP 摘要；若收到停止请求则置 stop_training 提前收尾。"""
         if stop_event is not None and stop_event.is_set():
             trainer.stop_training = True
             return

@@ -31,6 +31,7 @@ STATUS_LABELS = {
 def _now():
     # Recent-project switches can happen within a second.  Retain enough
     # precision for SQLite ordering to faithfully reflect the latest project.
+    """返回带微秒精度的 UTC 时间戳，供 SQLite 排序稳定区分同一秒内的操作。"""
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
@@ -107,6 +108,7 @@ class WorkspaceStore:
     """Small app-level SQLite store for the last and recently opened projects."""
 
     def __init__(self, database_path=None):
+        """定位并初始化应用级工作区数据库；受限环境下回退到当前目录。"""
         local_root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
         self.directory = os.path.join(local_root, "autoLabel")
         self.path = os.path.abspath(database_path or os.path.join(self.directory, WORKSPACE_DATABASE_FILE))
@@ -134,6 +136,7 @@ class WorkspaceStore:
 
     @contextmanager
     def _connect(self):
+        """打开一次短连接并提交事务，用完即关，避免多窗口争用。"""
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         try:
@@ -143,6 +146,7 @@ class WorkspaceStore:
             connection.close()
 
     def remember_project(self, project_dir, name):
+        """记录最近项目与最后打开项目，并只保留最近 12 条历史。"""
         root = os.path.abspath(project_dir)
         with self._connect() as connection:
             connection.execute(
@@ -155,11 +159,13 @@ class WorkspaceStore:
             connection.executemany("DELETE FROM recent_projects WHERE path = ?", [(row["path"],) for row in stale])
 
     def last_project(self):
+        """返回上次打开的项目路径，没有则返回空串。"""
         with self._connect() as connection:
             row = connection.execute("SELECT value FROM settings WHERE key = 'last_project'").fetchone()
         return row["value"] if row else ""
 
     def recent_projects(self):
+        """按打开时间倒序返回最近项目 (路径, 名称)，最多 12 条。"""
         with self._connect() as connection:
             return [(row["path"], row["name"]) for row in connection.execute("SELECT path, name FROM recent_projects ORDER BY opened_at DESC, rowid DESC LIMIT 12")]
 
@@ -193,6 +199,7 @@ class ProjectStore:
     """
 
     def __init__(self, annotations_dir, images_dir=None, project_dir=None):
+        """校验图片/标注目录位于项目内，然后建表并迁移旧版 JSON 状态。"""
         self.annotations_dir = os.path.abspath(annotations_dir)
         self.images_dir = os.path.abspath(images_dir) if images_dir else ""
         self.project_dir = os.path.abspath(project_dir or self._infer_project_dir())
@@ -210,6 +217,7 @@ class ProjectStore:
         self._initialize()
 
     def _infer_project_dir(self):
+        """未显式给出项目根时，用图片与标注目录的公共父目录推断。"""
         if self.images_dir:
             try:
                 return os.path.commonpath((self.annotations_dir, self.images_dir))
@@ -219,6 +227,7 @@ class ProjectStore:
 
     @contextmanager
     def _connect(self):
+        """打开项目数据库短连接，开启外键并自动提交事务。"""
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         try:
@@ -228,6 +237,7 @@ class ProjectStore:
             connection.close()
 
     def _initialize(self):
+        """建表、就地补列并写入 schema_version；这是唯一的数据库迁移入口。"""
         is_new = not os.path.exists(self.path)
         with self._connect() as connection:
             connection.executescript("""
@@ -348,6 +358,7 @@ class ProjectStore:
 
     @property
     def categories(self):
+        """按设置顺序返回英文机器标签列表。"""
         with self._connect() as connection:
             return [row["name"] for row in connection.execute("SELECT name FROM categories ORDER BY position")]
 
@@ -360,9 +371,11 @@ class ProjectStore:
             )]
 
     def category_display_names(self):
+        """返回英文标签到中文显示名的映射。"""
         return {item["name"]: item["display_name"] for item in self.category_records()}
 
     def set_categories(self, categories):
+        """整体替换类别表，显示名默认与英文标签相同。"""
         cleaned = _clean_categories(categories)
         self.set_category_records([{"name": name, "display_name": name} for name in cleaned])
 
@@ -386,11 +399,13 @@ class ProjectStore:
             )
 
     def status_for(self, filename):
+        """查询单张图片的审核状态，无记录时视为未审核。"""
         with self._connect() as connection:
             row = connection.execute("SELECT status FROM image_statuses WHERE filename = ?", (filename,)).fetchone()
         return row["status"] if row and row["status"] in STATUSES else STATUS_UNREVIEWED
 
     def set_status(self, filename, status):
+        """更新单张图片的审核状态，非通过状态会顺带删除其抽检记录。"""
         if status not in STATUSES:
             raise ValueError(f"Unsupported review status: {status}")
         with self._connect() as connection:
@@ -403,6 +418,7 @@ class ProjectStore:
                 connection.execute("DELETE FROM spot_checks WHERE filename = ?", (filename,))
 
     def set_statuses(self, filenames, status):
+        """批量更新审核状态并去重；非通过状态一并清理抽检记录。"""
         if status not in STATUSES:
             raise ValueError(f"Unsupported review status: {status}")
         names = list(dict.fromkeys(str(filename) for filename in filenames))
@@ -419,6 +435,7 @@ class ProjectStore:
         return len(names)
 
     def spot_checks_for(self, filenames):
+        """批量读取抽检状态，按 900 个一批规避 SQLite 参数上限。"""
         names = list(dict.fromkeys(str(filename) for filename in filenames))
         result = {}
         if not names:
@@ -431,6 +448,7 @@ class ProjectStore:
         return result
 
     def mark_spot_checks(self, filenames, state="sampled"):
+        """把图片标记为已抽取或抽检通过，并记录对应时间。"""
         if state not in {"sampled", "passed"}:
             raise ValueError("Unsupported spot-check state")
         names = list(dict.fromkeys(str(filename) for filename in filenames))
@@ -443,6 +461,7 @@ class ProjectStore:
             )
 
     def record_dataset_export(self, output_dir, data_yaml, train_images, val_images, object_count, classes, validation_ratio):
+        """登记一次数据集导出；产物路径必须在项目目录内。"""
         for path in (output_dir, data_yaml):
             if os.path.commonpath((self.project_dir, os.path.abspath(path))) != self.project_dir:
                 raise ValueError("导出产物必须保存在项目目录内")
@@ -454,6 +473,7 @@ class ProjectStore:
         return int(cursor.lastrowid)
 
     def recent_dataset_exports(self, limit=5):
+        """返回最近几次导出记录，并把相对路径还原为绝对路径。"""
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM dataset_exports ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
         result = []
@@ -462,6 +482,7 @@ class ProjectStore:
         return result
 
     def record_training_run(self, export_id, run_dir, weights_path, model, epochs):
+        """登记一次训练运行；运行目录与权重路径必须在项目目录内。"""
         for path in (run_dir, weights_path):
             if os.path.commonpath((self.project_dir, os.path.abspath(path))) != self.project_dir:
                 raise ValueError("训练产物必须保存在项目目录内")
@@ -473,6 +494,7 @@ class ProjectStore:
         return int(cursor.lastrowid)
 
     def recent_training_runs(self, limit=5):
+        """返回最近几次训练记录，并把相对路径还原为绝对路径。"""
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM training_runs ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
         result = []
@@ -502,6 +524,7 @@ class ProjectStore:
         return row["value"] if row else default
 
     def set_metadata_value(self, key, value):
+        """写入项目级键值配置，供各类设置复用 metadata 表。"""
         with self._connect() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)",
@@ -522,6 +545,7 @@ class ProjectStore:
             )
 
     def annotation_versions_for(self, filename):
+        """按时间倒序返回某张图片的历史 XML 版本，并解析命中规则。"""
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT id, snapshot_path, source, model, prompt, annotation_count, risk_score, rules_json, created_at "
@@ -541,6 +565,7 @@ class ProjectStore:
 
     @staticmethod
     def _file_stamp(path):
+        """返回文件的 (mtime_ns, size) 指纹，读不到时返回 (-1, -1)。"""
         try:
             stat = os.stat(path)
             return stat.st_mtime_ns, stat.st_size
@@ -606,6 +631,7 @@ class ProjectStore:
         return {row[0] for row in prepared}
 
     def upsert_quality(self, filename, risk, rules):
+        """按当前文件指纹计算并写入单张图片的风险索引。"""
         self.upsert_quality_records([(filename, risk, rules, self.quality_stamp(filename))])
 
     def mark_batch_for_review(self, filenames, include_approved=False, include_skipped=False):
@@ -646,6 +672,7 @@ class ProjectStore:
         return result
 
     def summary(self, filenames):
+        """统计给定图片集合中各审核状态的数量。"""
         result = {status: 0 for status in STATUSES}
         for status in self.statuses_for(filenames).values():
             result[status] += 1

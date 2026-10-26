@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import hashlib
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from .model_registry import ImageModelRegistry
 
 @dataclass(frozen=True)
 class ImagePreannotationRequest:
+    """一次单模型预标注任务的不可变输入：目录、文件列表、提示词与阈值。"""
     project_root: str
     images_dir: str
     annotations_dir: str
@@ -29,6 +31,7 @@ class ImagePreannotationRequest:
 
 @dataclass(frozen=True)
 class ImagePreannotationResult:
+    """预标注结果：已完成文件与是否被中途停止。"""
     completed: tuple[str, ...]
     stopped: bool
 
@@ -37,6 +40,7 @@ class ImagePreannotationService:
     """Runs one provider over image files and records every prediction version."""
 
     def __init__(self, registry: ImageModelRegistry | None = None):
+        """允许注入模型注册表，便于测试替换预测器。"""
         self.registry = registry or ImageModelRegistry()
 
     def run(
@@ -46,6 +50,7 @@ class ImagePreannotationService:
         on_log: Callable[[str], None],
         on_progress: Callable[[int], None],
     ) -> ImagePreannotationResult:
+        """加载一次模型后逐图推理，失败只记日志不中断整批。"""
         project = ProjectStore(request.annotations_dir, request.images_dir, request.project_root)
         on_log("正在加载检测模型，请稍候…")
         predictor = self.registry.create(request.provider_id, request.weights_path)
@@ -101,6 +106,7 @@ class ImagePreannotationService:
 
     @staticmethod
     def _file_digest(path):
+        """分块读取文件计算 SHA-256，用于判断版本是否重复。"""
         digest = hashlib.sha256()
         with open(path, "rb") as stream:
             for chunk in iter(lambda: stream.read(65536), b""):

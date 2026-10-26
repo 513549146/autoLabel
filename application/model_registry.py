@@ -12,6 +12,7 @@ from .contracts import PredictionBundle, normalize_annotations
 
 @dataclass(frozen=True)
 class ImageModelDescriptor:
+    """描述一个可选检测模型：稳定 id、界面标题与能力集合。"""
     id: str
     title: str
     capabilities: frozenset[str]
@@ -23,6 +24,7 @@ class ImagePredictor(Protocol):
     descriptor: ImageModelDescriptor
 
     def predict(self, image_path: str, prompt: str, confidence: float) -> PredictionBundle:
+        """对单张图片执行一次检测并返回归一化结果。"""
         ...
 
 
@@ -30,6 +32,7 @@ class CoreImagePredictor:
     """Adapter around the existing, tested ``core`` detector implementations."""
 
     def __init__(self, descriptor: ImageModelDescriptor, weights_path: str = ""):
+        """加载对应后端模型；只有自定义 YOLO 才使用外部权重路径。"""
         self.descriptor = descriptor
         self.weights_path = weights_path
         self._detector = core.load_models(
@@ -37,6 +40,7 @@ class CoreImagePredictor:
         )
 
     def predict(self, image_path: str, prompt: str, confidence: float) -> PredictionBundle:
+        """调用 core.auto_label 并归一化为 PredictionBundle。"""
         annotations = core.auto_label(
             image_path, prompt, self._detector, box_threshold=confidence
         )
@@ -60,13 +64,16 @@ class ImageModelRegistry:
     }
 
     def descriptors(self) -> tuple[ImageModelDescriptor, ...]:
+        """返回全部可选模型描述，供界面下拉框使用。"""
         return tuple(self._DESCRIPTORS.values())
 
     def descriptor(self, provider_id: str) -> ImageModelDescriptor:
+        """按 id 取描述，未知 id 直接报错以免静默回退。"""
         try:
             return self._DESCRIPTORS[provider_id]
         except KeyError as error:
             raise ValueError(f"未知图像模型：{provider_id}") from error
 
     def create(self, provider_id: str, weights_path: str = "") -> ImagePredictor:
+        """按 id 创建预测器实例（会立即加载权重）。"""
         return CoreImagePredictor(self.descriptor(provider_id), weights_path)

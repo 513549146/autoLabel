@@ -11,5 +11,5 @@ supervision>=0.22.0
 pycocotools
 ultralytics
 # YOLOE 的文本类别编码器（官方 Ultralytics 依赖）
-git+https://github.com/ultralytics/CLIP.git
+#git+https://github.com/ultralytics/CLIP.git
 PySide6

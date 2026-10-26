@@ -5,7 +5,9 @@ from ..ui import *
 
 
 class WelcomePage(QWidget):
+    """项目入口页：新建、导入项目及最近项目快捷入口，未打开项目时显示。"""
     def __init__(self, window):
+        """搭建欢迎面板、两张操作卡片与最近项目流式布局容器。"""
         super().__init__()
         self.window = window
         root = QVBoxLayout(self); root.setContentsMargins(56, 42, 56, 46); root.setSpacing(0)
@@ -37,6 +39,7 @@ class WelcomePage(QWidget):
         root.addStretch(2)
 
     def _action_card(self, icon_name, title, detail, callback, primary=False):
+        """生成一张带图标旁置文字的欢迎页操作按钮。"""
         action = QToolButton(self)
         action.setObjectName("welcomeActionPrimary" if primary else "welcomeAction")
         action.setIcon(QIcon(str(ROOT_DIR / "assets" / icon_name)))
@@ -49,6 +52,7 @@ class WelcomePage(QWidget):
         return action
 
     def refresh(self):
+        """重建最近项目列表，只展示前 5 个并显示数量。"""
         while self.recent_layout.count():
             item = self.recent_layout.takeAt(0)
             widget = item.widget()

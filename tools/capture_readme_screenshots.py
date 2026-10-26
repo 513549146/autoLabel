@@ -36,19 +36,24 @@ class DemoWorkspace:
     """Keep documentation capture independent of the user's workspace.db."""
 
     def __init__(self):
+        """初始化空的内存最近项目列表。"""
         self._recent = []
 
     def recent_projects(self):
+        """返回内存中的最近项目，不读取用户 workspace.db。"""
         return list(self._recent)
 
     def last_project(self):
+        """始终返回 None，避免截图脚本自动恢复用户上次项目。"""
         return None
 
     def remember_project(self, path, name):
+        """仅记住一个项目，保证截图内容可控。"""
         self._recent = [(path, name)]
 
 
 def draw_sample_image(path: Path, offset: int):
+    """绘制一张全合成的仓库场景 JPEG，供文档截图使用。"""
     image = QImage(960, 600, QImage.Format_RGB32)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing)
@@ -99,6 +104,7 @@ def draw_sample_image(path: Path, offset: int):
 
 
 def make_demo_project(root: Path):
+    """生成临时示例项目：图片、VOC 标注、类别、风险索引与审核状态。"""
     images = root / "images"
     annotations = root / "annotations"
     for directory in (images, annotations, root / "models", root / "annotation_versions", root / "yolo_dataset"):
@@ -135,6 +141,7 @@ def make_demo_project(root: Path):
 
 
 def settle(app, seconds=0.6):
+    """在指定时长内反复处理 Qt 事件，让待绘制与延迟删除生效。"""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         app.processEvents()
@@ -145,6 +152,7 @@ def settle(app, seconds=0.6):
 
 
 def capture(window, app, filename):
+    """等待界面稳定后把窗口抓图保存为 assets/docs 下的 PNG。"""
     settle(app)
     target = OUTPUT / filename
     if not window.grab().save(str(target), "PNG"):
@@ -153,6 +161,7 @@ def capture(window, app, filename):
 
 
 def main():
+    """在仓库内的临时目录生成示例项目并逐页抓取文档截图；不接触真实项目。"""
     OUTPUT.mkdir(parents=True, exist_ok=True)
     QApplication.setAttribute(Qt.AA_DontUseNativeDialogs, True)
     app = QApplication.instance() or QApplication([])

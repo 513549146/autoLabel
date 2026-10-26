@@ -19,6 +19,7 @@ class CategoryCellDelegate(QStyledItemDelegate):
     enter_pressed = Signal(int, int)
 
     def createEditor(self, parent, option, index):
+        """用无边框行编辑器覆盖整格，避免原文本透出。"""
         editor = QLineEdit(parent)
         editor.setFrame(False)
         editor.setStyleSheet("background:#FFFFFF; border:0; border-radius:0; margin:0; padding:0 10px; color:#1D1D1F;")
@@ -26,6 +27,7 @@ class CategoryCellDelegate(QStyledItemDelegate):
         return editor
 
     def updateEditorGeometry(self, editor, option, _index):
+        """让编辑器铺满单元格而不是留出原生内边距。"""
         editor.setGeometry(option.rect)
 
 
@@ -33,6 +35,7 @@ class CategoryManagerDialog(QDialog):
     """Project-local category table: English model labels plus review display names."""
 
     def __init__(self, project, parent=None):
+        """构建类别表：序号、英文标签、中文显示名三列，并载入现有记录。"""
         super().__init__(parent)
         self.project = project
         self.setWindowTitle("类别管理")
@@ -63,9 +66,11 @@ class CategoryManagerDialog(QDialog):
         self._ensure_blank_row()
 
     def _row_is_empty(self, row):
+        """判断某行的英文标签与显示名是否都为空。"""
         return all(not (self.table.item(row, column).text().strip() if self.table.item(row, column) else "") for column in (1, 2))
 
     def _add_row(self, name="", display_name="", focus=True):
+        """插入一行类别；末尾已有空行时直接复用它。"""
         use_blank_row = not name and not display_name and self.table.rowCount() and self._row_is_empty(self.table.rowCount() - 1)
         row = self.table.rowCount() - 1 if use_blank_row else self.table.rowCount()
         if not use_blank_row:
@@ -79,10 +84,12 @@ class CategoryManagerDialog(QDialog):
             self._edit_cell(row, 1)
 
     def _ensure_blank_row(self):
+        """保证表格末尾始终留一行空行供继续录入。"""
         if not self.table.rowCount() or not self._row_is_empty(self.table.rowCount() - 1):
             self._add_row(focus=False)
 
     def _edit_cell(self, row, column):
+        """把焦点移入指定单元格并进入编辑状态。"""
         self.table.setCurrentCell(row, column)
         item = self.table.item(row, column)
         if item:
@@ -91,6 +98,7 @@ class CategoryManagerDialog(QDialog):
     def _advance_after_enter(self, row, column):
         """Enter moves through the grid and grows the trailing blank row."""
         def move_to_next_cell():
+            """回车后先跳到显示名列，已到末行则补一行继续录入。"""
             if column == 1:
                 self._edit_cell(row, 2)
                 return
@@ -100,6 +108,7 @@ class CategoryManagerDialog(QDialog):
         QTimer.singleShot(0, move_to_next_cell)
 
     def _remove_selected(self):
+        """删除所有选中行，并重排序号、补回空行。"""
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
         for row in rows:
             self.table.removeRow(row)
@@ -108,6 +117,7 @@ class CategoryManagerDialog(QDialog):
         self._ensure_blank_row()
 
     def _save(self):
+        """校验英文标签与显示名都不重复后整体写入项目类别表。"""
         records = []
         seen = set(); display_seen = set()
         for row in range(self.table.rowCount()):
@@ -131,12 +141,14 @@ class CategoryManagerDialog(QDialog):
 
 
 class AutoPage(QWidget):
+    """自动标注页：导入图片/标注、配置类别与模型、启动批量预标注。"""
     log_message = Signal(str)
     progress_changed = Signal(int)
     batch_finished = Signal(str, object, bool)
     batch_failed = Signal(str)
 
     def __init__(self, window):
+        """构建数据与配置两张卡片、进度条、日志区，并连接信号到界面。"""
         super().__init__()
         self.window = window
         self._worker_thread = None
@@ -169,14 +181,17 @@ class AutoPage(QWidget):
         self.batch_failed.connect(self._on_label_failed)
 
     def _update_confidence_label(self, value):
+        """把置信度滑块的数值同步到百分比文案。"""
         self.confidence_value.setText(f"{int(value)}%")
 
     def _append_log(self, message):
+        """追加一行运行记录并自动滚动到底部。"""
         self.log.appendPlainText(str(message))
         scrollbar = self.log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
     def _clear_log(self):
+        """清空当前运行记录。"""
         self.log.clear()
         self.window.status_message("已清空自动标注运行记录")
 
@@ -206,6 +221,7 @@ class AutoPage(QWidget):
             self.workflow_status.setToolTip("")
 
     def _apply_quick_settings(self, settings):
+        """把项目保存的模型、处理范围与置信度回填到控件。"""
         model_value = (("custom_yolo", settings.model_weights_path)
                        if settings.primary_provider_id == "custom_yolo" else settings.primary_provider_id)
         for combo, value in ((self.model, model_value), (self.run_scope, settings.scope)):
@@ -217,6 +233,7 @@ class AutoPage(QWidget):
         self._update_confidence_label(self.confidence.value())
 
     def sync_project(self, root: str | None = None, name: str | None = None):
+        """跟随当前项目刷新路径、类别摘要、模型列表与已应用流程。"""
         active = bool(root and self.window.project_root)
         self.images.setText(self.window.images_dir if active else "")
         self.annotations.setText(self.window.annotations_dir if active else "")
@@ -233,6 +250,7 @@ class AutoPage(QWidget):
             self.category_summary.setText("打开项目后管理英文标签与中文审核显示名")
 
     def _update_category_summary(self):
+        """在配置区展示前几类“英文→中文”的摘要与类别总数。"""
         records = self.window.project.category_records() if self.window.project else []
         if not records:
             self.category_summary.setText("尚未配置类别；点击“管理类别”添加英文标签和中文显示名")
@@ -279,6 +297,7 @@ class AutoPage(QWidget):
         self._quick_workflow.save_settings(self.window.project, settings)
 
     def _import_images(self):
+        """把所选目录的图片复制进项目 images/，同名文件不覆盖。"""
         if not self.window.project_root:
             self.window.status_message("请先新建或打开项目"); return
         source = QFileDialog.getExistingDirectory(self, "选择要导入的图片目录", self.window.project_root)
@@ -294,6 +313,7 @@ class AutoPage(QWidget):
         self.log.appendPlainText(f"已导入 {copied} 张图片到项目目录（{skipped} 张同名文件未覆盖）。")
 
     def _import_annotations(self):
+        """只导入能匹配到现有图片的 XML，并刷新待审核队列。"""
         if not self.window.project_root:
             self.window.status_message("请先新建或打开项目"); return
         source = QFileDialog.getExistingDirectory(self, "选择要导入的 XML 标注目录", self.window.project_root)
@@ -312,6 +332,7 @@ class AutoPage(QWidget):
         self.log.appendPlainText(f"已导入 {copied} 份 XML 标注，{imported} 张图片已进入待审核（{skipped} 份未导入）。")
 
     def _categories(self):
+        """打开类别管理对话框，保存后刷新摘要与审核页。"""
         if not self.window.project:
             self.window.status_message("请先新建或打开项目")
             return
@@ -321,6 +342,7 @@ class AutoPage(QWidget):
             self.window.review.refresh()
 
     def _start_labeling(self):
+        """校验流程与项目状态，确认重跑范围后在工作线程启动快速标注。"""
         if not WorkflowTemplateRegistry().get(self._active_template_id).executable:
             ios_alert(self, "流程尚未可执行", "自有模型预设目前用于查看与编排。请选择快速标注或自定义流程后开始任务。", confirm_text="知道了")
             return
@@ -374,10 +396,12 @@ class AutoPage(QWidget):
         self._worker_thread.start()
 
     def _stop_labeling(self):
+        """请求在当前图片处理完成后停止批处理。"""
         if self._worker_thread and self._worker_thread.is_alive():
             self._stop_event.set(); self.stop.setEnabled(False); self.log.appendPlainText("将在当前图片处理完成后停止。")
 
     def _run_quick_labeling(self, request: QuickAnnotationRequest):
+        """工作线程入口：运行快速标注流程并把结果通过信号回传。"""
         try:
             result = self._quick_workflow.run(
                 request,
@@ -392,6 +416,7 @@ class AutoPage(QWidget):
             self.batch_failed.emit(f"快速标注失败：{exc}")
 
     def _on_label_finished(self, project_root: str, result, stopped: bool):
+        """批处理结束后恢复按钮、刷新全项目并跳转到审核页。"""
         self.start.setEnabled(bool(self.window.project_root) and WorkflowTemplateRegistry().get(self._active_template_id).executable); self.stop.setEnabled(False)
         if project_root != self.window.project_root:
             self.log.appendPlainText("任务完成，但当前已切换到其他项目；结果仍已保存到原项目。")
@@ -404,6 +429,7 @@ class AutoPage(QWidget):
             self.window.show_page("review")
 
     def _on_label_failed(self, message: str):
+        """恢复按钮并提示失败原因。"""
         self.start.setEnabled(bool(self.window.project_root) and WorkflowTemplateRegistry().get(self._active_template_id).executable); self.stop.setEnabled(False)
         self.log.appendPlainText(message)
         ios_alert(self, "自动标注失败", message, confirm_text="知道了", destructive=True)

@@ -14,6 +14,7 @@ class ImageReviewQueue:
 
     @staticmethod
     def target_files(images_dir: str, annotations_dir: str, project, scope: str) -> list[str]:
+        """按处理范围筛选图片；XML 损坏的图片会进入队列而不是被静默丢弃。"""
         filenames = core.list_images(images_dir)
         statuses = project.statuses_for(filenames) if project else {}
         result: list[str] = []

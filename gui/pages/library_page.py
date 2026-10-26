@@ -9,12 +9,14 @@ from ..canvas import ImageCanvas
 from ..ui import *
 
 class LibraryPage(QWidget):
+    """已通过 · 训练候选页：统计就绪度、做抽检、把图片移回待审核。"""
     readiness_finished = Signal(int, object)
     thumbnail_ready = Signal(int, str, object, object)
     PAGE_SIZE = 48
     THUMBNAIL_CACHE_SIZE = 192
 
     def __init__(self, window):
+        """构建就绪看板、筛选栏与缩略图网格，并连接后台统计与缩略图信号。"""
         super().__init__(); self.window = window; self.files = []; self.selected = set(); self._analysis = {}; self._analysis_signature = (); self._analysis_token = 0; self._spot_checks = {}
         self._image_root = ""; self._visible = []; self._shown = 0; self._more_button = None; self._grid_initialized = False; self._page_scheduled = False
         self._thumbnail_token = 0; self._thumbnail_labels = {}; self._thumbnail_cache = OrderedDict()
@@ -34,14 +36,17 @@ class LibraryPage(QWidget):
         self.thumbnail_ready.connect(self._apply_thumbnail)
 
     def _metric(self, caption, value):
+        """创建一个指标块（数值、标题、细进度条），返回三元组供后续更新。"""
         host = QWidget(); host.setFixedWidth(76); layout = QVBoxLayout(host); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(1); value_label = label(value, "section"); layout.addWidget(value_label); layout.addWidget(label(caption, "muted")); progress = QProgressBar(); progress.setRange(0, 100); progress.setTextVisible(False); progress.setFixedHeight(3); layout.addWidget(progress)
         return host, value_label, progress
 
     @staticmethod
     def _set_metric(metric, value, percent, color):
+        """更新指标块的数值、进度条百分比与颜色。"""
         _, value_label, progress = metric; value_label.setText(value); progress.setValue(max(0, min(100, int(percent)))); progress.setStyleSheet(f"QProgressBar {{background:#E9EDF2;border:0;border-radius:3px;}} QProgressBar::chunk {{background:{color};border-radius:3px;}}")
 
     def _training_target(self):
+        """读取项目级训练目标，缺省回退到 config.MIN_TRAIN_IMAGES。"""
         if not self.window.project:
             return config.MIN_TRAIN_IMAGES
         try:
@@ -50,6 +55,7 @@ class LibraryPage(QWidget):
             return config.MIN_TRAIN_IMAGES
 
     def edit_training_target(self):
+        """弹窗修改项目训练目标并立即刷新就绪度。"""
         if not self.window.project:
             return
         value, accepted = ios_text_input(self, "训练图片目标", "设置本项目建议达到的已通过图片数量。该目标仅用于就绪提醒，可随时调整。", str(self._training_target()), "例如 200", "保存")
@@ -90,6 +96,7 @@ class LibraryPage(QWidget):
         self.class_host.setFixedWidth(max(1, content_width)); self.class_host.setFixedHeight(34)
 
     def refresh(self):
+        """重读已通过图片与抽检状态，刷新看板、筛选与网格。"""
         files = self.window.project_images(STATUS_APPROVED)
         spot_checks = self.window.project.spot_checks_for(files) if self.window.project else {}
         image_root = self.window.images_dir
@@ -109,6 +116,7 @@ class LibraryPage(QWidget):
             self._update_selection_info()
 
     def _sync_categories(self):
+        """类别表变化时重建类别筛选，并尽量保留当前选项。"""
         categories = tuple(self.window.project.categories) if self.window.project else ()
         if categories == self._categories_signature:
             return
@@ -119,6 +127,7 @@ class LibraryPage(QWidget):
         index = self.category_filter.findData(current); self.category_filter.setCurrentIndex(max(0, index)); self.category_filter.blockSignals(False)
 
     def _queue_readiness(self):
+        """签名变化时在后台重算类别覆盖与标注完整度。"""
         categories = self._categories_signature or ()
         signature = (self.window.annotations_dir, tuple(self.files), categories)
         if signature == self._analysis_signature:
@@ -130,6 +139,7 @@ class LibraryPage(QWidget):
         threading.Thread(target=lambda: self.readiness_finished.emit(token, core.training_readiness(annotations_dir, files, categories)), daemon=True).start()
 
     def _apply_readiness(self, token, analysis):
+        """把后台统计结果写入指标与类别胶囊，并判定是否就绪。"""
         if token != self._analysis_token:
             return
         self._analysis = analysis
@@ -143,6 +153,7 @@ class LibraryPage(QWidget):
             self._render_grid()
 
     def _visible_files(self):
+        """按搜索词、类别与抽检状态筛选候选文件。"""
         query, category, spot = self.search.text().strip().lower(), self.category_filter.currentData() or "all", self.spot_filter.currentData() or "all"
         labels = self._analysis.get("labels_by_file", {})
         result = []
@@ -155,6 +166,7 @@ class LibraryPage(QWidget):
         return result
 
     def _render_grid(self):
+        """重建缩略图网格；缩略图按当前页懒加载。"""
         self._grid_initialized = True
         self._thumbnail_token += 1
         self._thumbnail_labels.clear()
@@ -170,10 +182,12 @@ class LibraryPage(QWidget):
         self._append_page()
 
     def _update_selection_info(self):
+        """刷新已选数量并切换批量按钮可用性。"""
         self.selection_info.setText(f"已选择 {len(self.selected)} 张" if self.selected else "未选择")
         self.batch_return.setEnabled(bool(self.selected))
 
     def _append_page(self):
+        """追加一页候选卡片，命中缓存的缩略图直接复用，其余交给后台解码。"""
         if self._more_button:
             self.grid.removeWidget(self._more_button)
             self._more_button.deleteLater()
@@ -210,6 +224,7 @@ class LibraryPage(QWidget):
             threading.Thread(target=self._load_thumbnails, args=(token, pending), daemon=True).start()
 
     def _on_scroll(self, value):
+        """滚动接近底部时安排加载下一页，避免重复触发。"""
         bar = self.scroll.verticalScrollBar()
         if (not self._page_scheduled and self._shown < len(self._visible)
                 and bar.maximum() > 0 and value >= bar.maximum() - 240):
@@ -217,6 +232,7 @@ class LibraryPage(QWidget):
             QTimer.singleShot(0, self._auto_append_page)
 
     def _auto_append_page(self):
+        """仍在底部附近时真正追加下一页。"""
         self._page_scheduled = False
         bar = self.scroll.verticalScrollBar()
         if self._shown < len(self._visible) and bar.maximum() > 0 and bar.value() >= bar.maximum() - 240:
@@ -239,6 +255,7 @@ class LibraryPage(QWidget):
                 return
 
     def _apply_thumbnail(self, token, filename, key, thumbnail):
+        """回到主线程后写入缩略图，并按 LRU 限制缓存大小。"""
         if token != self._thumbnail_token:
             return
         entry = self._thumbnail_labels.pop(filename, None)
@@ -256,9 +273,11 @@ class LibraryPage(QWidget):
             self._thumbnail_cache.popitem(last=False)
 
     def toggle_selected(self, filename, checked):
+        """记录或取消某张候选的选中状态。"""
         (self.selected.add(filename) if checked else self.selected.discard(filename)); self._update_selection_info()
 
     def start_spot_check(self):
+        """从未抽取的候选里随机抽若干张并标记为待抽检。"""
         if not self.window.project or not self.files:
             return
         candidates = [name for name in self.files if name not in self._spot_checks]
@@ -268,23 +287,27 @@ class LibraryPage(QWidget):
         self.window.project.mark_spot_checks(chosen, "sampled"); self._spot_checks = self.window.project.spot_checks_for(self.files); self.spot_filter.blockSignals(True); self.spot_filter.setCurrentIndex(self.spot_filter.findData("sampled")); self.spot_filter.blockSignals(False); self._update_spot_progress(); self._render_grid(); self.window.status_message(f"已随机抽取 {len(chosen)} 张，点击“开始抽检”进入审核页")
 
     def _update_spot_progress(self):
+        """刷新待抽检/已完成计数与“开始抽检”可用性。"""
         pending = sum(record.get("state") == "sampled" for record in self._spot_checks.values())
         passed = sum(record.get("state") == "passed" for record in self._spot_checks.values())
         self.spot_progress.setText(f"待抽检 {pending} · 已完成 {passed}")
         self.begin_spot_check.setEnabled(bool(pending))
 
     def begin_spot_check_review(self):
+        """带着待抽检图片进入常规审核画布。"""
         sampled = [filename for filename, record in self._spot_checks.items() if record.get("state") == "sampled"]
         if sampled:
             self.window.open_spot_check_review(sampled)
 
     def return_selected(self):
+        """确认后把所选候选批量移回待审核，不删除原图与 XML。"""
         names = sorted(self.selected)
         if not names or not self.window.project or not ios_alert(self, "批量移回待审核", f"将 {len(names)} 张训练候选移回待审核？原图和 XML 不会删除。", "移回待审核", "取消"):
             return
         self.window.project.set_statuses(names, STATUS_NEEDS_REVIEW); self.selected.clear(); self.window.refresh_all(); self.window.status_message(f"已移回 {len(names)} 张待审核")
 
     def remove_record(self, filename: str):
+        """确认后把单张图片移回待审核。"""
         if not ios_alert(self, "移回待审核", f"要将“{filename}”移回待审核吗？\n\n原图和 XML 标注不会删除。", "移回待审核", "取消") or not self.window.project:
             return
         self.window.project.set_statuses([filename], STATUS_NEEDS_REVIEW); self.window.refresh_all(); self.window.status_message(f"已移回待审核：{filename}")

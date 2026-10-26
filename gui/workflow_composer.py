@@ -24,6 +24,7 @@ class _WorkflowNode(QGraphicsObject):
     HEIGHT = 100
 
     def __init__(self, step):
+        """初始化流程卡片节点：可拖动、可选中，并带轻微投影。"""
         super().__init__()
         self.step = step
         self._connecting = False
@@ -41,9 +42,11 @@ class _WorkflowNode(QGraphicsObject):
         self.setGraphicsEffect(shadow)
 
     def boundingRect(self) -> QRectF:
+        """返回节点的绘制与命中范围。"""
         return QRectF(0, 0, self.WIDTH, self.HEIGHT)
 
     def paint(self, painter, option, widget=None):
+        """绘制卡片：标题、说明、必经/可选徽标与输入输出端口。"""
         del option, widget
         painter.setRenderHint(QPainter.Antialiasing)
         selected = self.isSelected()
@@ -91,11 +94,13 @@ class _WorkflowNode(QGraphicsObject):
         painter.drawEllipse(QPointF(self.WIDTH - 8, self.HEIGHT / 2), 6, 6)
 
     def itemChange(self, change, value):
+        """节点位置变化时发出 moved，供画布更新连线。"""
         if change == QGraphicsItem.ItemPositionHasChanged:
             self.moved.emit(self.step.id)
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event):
+        """按下输出端口时进入连线状态，否则作为拖动节点处理。"""
         point = event.pos()
         self._connecting = (
             event.button() == Qt.LeftButton
@@ -110,6 +115,7 @@ class _WorkflowNode(QGraphicsObject):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        """连线状态下持续发出预览位置，让虚线跟随指针。"""
         if self._connecting:
             self.connection_preview.emit(self.step.id, event.scenePos())
             event.accept()
@@ -117,6 +123,7 @@ class _WorkflowNode(QGraphicsObject):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        """松开时结束连线并请求建立依赖，或仅上报选中。"""
         if self._connecting:
             self._connecting = False
             self.connection_finished.emit(self.step.id, event.scenePos())
@@ -132,10 +139,12 @@ class _WorkflowScene(QGraphicsScene):
     """Draw a quiet dot grid and dependency arrows beneath operation cards."""
 
     def __init__(self, board):
+        """保存所属画布引用，以便绘制背景时读取图与节点。"""
         super().__init__(board)
         self.board = board
 
     def drawBackground(self, painter, rect):
+        """绘制点阵背景、依赖箭头与正在拖拽的连线预览。"""
         painter.fillRect(rect, QColor("#FBFCFE"))
         painter.setPen(QPen(QColor("#E9EEF4"), 1))
         spacing = 24
@@ -166,6 +175,7 @@ class _WorkflowScene(QGraphicsScene):
                 painter.drawLine(start, end)
 
     def _edge_path(self, source, target, first, second):
+        """按两节点相对位置生成曲线路径与箭头，并为补扫分支绕行。"""
         delta = second.pos() - first.pos()
         path = QPainterPath()
         if source == "primary_model" and target == "candidate_fusion" and "recovery_model" in self.board.nodes:
@@ -199,6 +209,7 @@ class _WorkflowScene(QGraphicsScene):
 
 
 class _WorkflowBoard(QGraphicsView):
+    """可缩放平移的流程画布，负责节点布局与连线增删。"""
     layout_changed = Signal(dict)
     step_selected = Signal(str)
     graph_changed = Signal(object)
@@ -212,6 +223,7 @@ class _WorkflowBoard(QGraphicsView):
     )
 
     def __init__(self, parent=None):
+        """初始化画布场景、默认缩放与平移手势设置。"""
         super().__init__(parent)
         self.template: WorkflowTemplate = QUICK_WORKFLOW
         self.graph = WorkflowGraph.preset(QUICK_WORKFLOW)
@@ -236,6 +248,7 @@ class _WorkflowBoard(QGraphicsView):
     def set_template(self, template: WorkflowTemplate,
                      positions: dict[str, tuple[int, int]] | None = None,
                      graph: WorkflowGraph | None = None):
+        """按模板重建节点；检测到旧版布局坐标时放弃旧位置。"""
         self.template = template
         self.graph = graph or WorkflowGraph.preset(template)
         self._preview = None
@@ -268,10 +281,12 @@ class _WorkflowBoard(QGraphicsView):
         QTimer.singleShot(0, self.fit_graph)
 
     def set_graph(self, graph: WorkflowGraph):
+        """在当前节点位置上应用新图并通知外部。"""
         self.set_template(self.template, self.positions, graph)
         self.graph_changed.emit(graph)
 
     def add_edge(self, source: str, target: str) -> tuple[str, ...]:
+        """校验收到的连线合法才加入图中，返回错误信息列表。"""
         edge = (source, target)
         if edge in self.graph.edges:
             return ("该连线已经存在",)
@@ -284,6 +299,7 @@ class _WorkflowBoard(QGraphicsView):
         return errors
 
     def remove_edge(self, source: str, target: str) -> tuple[str, ...]:
+        """校验删除后的图仍然合法才移除连线，返回错误信息列表。"""
         candidate = WorkflowGraph(
             self.graph.template_id, self.graph.nodes,
             tuple(edge for edge in self.graph.edges if edge != (source, target)),
@@ -296,20 +312,24 @@ class _WorkflowBoard(QGraphicsView):
         return errors
 
     def _node_moved(self, step_id: str):
+        """记录节点拖动后的浮点位置并重绘连线。"""
         node = self.nodes.get(step_id)
         if node:
             self.positions[step_id] = (round(node.pos().x()), round(node.pos().y()))
         self._scene.update()
 
     def _node_released(self, step_id: str):
+        """拖动结束时落定位置并通知布局变化。"""
         self._node_moved(step_id)
         self.layout_changed.emit(dict(self.positions))
 
     def _preview_connection(self, source: str, point: QPointF):
+        """记录连线预览的起点与当前坐标并重绘。"""
         self._preview = (source, point)
         self._scene.update()
 
     def _finish_connection(self, source: str, point: QPointF):
+        """在落点找到目标节点后请求建边，被拒时把原因抛给界面。"""
         self._preview = None
         target = next(
             (item.step.id for item in self._scene.items(point)
@@ -323,6 +343,7 @@ class _WorkflowBoard(QGraphicsView):
         self._scene.update()
 
     def fit_graph(self):
+        """缩放并居中到刚好容纳全部节点，并恢复自动适配。"""
         if not self.nodes or self.viewport().width() < 30:
             return
         bounds = self._scene.itemsBoundingRect().adjusted(-54, -64, 54, 64)
@@ -334,6 +355,7 @@ class _WorkflowBoard(QGraphicsView):
         self.zoom_changed.emit(round(self._zoom * 100))
 
     def zoom_by(self, factor: float):
+        """按倍率缩放，并把缩放夹在 55%～250% 之间。"""
         desired = max(0.55, min(2.5, self._zoom * factor))
         self.scale(desired / self._zoom, desired / self._zoom)
         self._zoom = desired
@@ -341,16 +363,20 @@ class _WorkflowBoard(QGraphicsView):
         self.zoom_changed.emit(round(self._zoom * 100))
 
     def zoom_in(self):
+        """放大一级。"""
         self.zoom_by(1.18)
 
     def zoom_out(self):
+        """缩小一级。"""
         self.zoom_by(1 / 1.18)
 
     def wheelEvent(self, event):
+        """用滚轮缩放画布，滚轮不再滚动视图。"""
         self.zoom_by(1.12 if event.angleDelta().y() > 0 else 1 / 1.12)
         event.accept()
 
     def mousePressEvent(self, event):
+        """中键按下进入平移状态。"""
         if event.button() == Qt.MiddleButton:
             self._middle_pan = event.position().toPoint()
             self.setCursor(Qt.ClosedHandCursor)
@@ -359,6 +385,7 @@ class _WorkflowBoard(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        """中键拖动时平移视图。"""
         if self._middle_pan is not None:
             point = event.position().toPoint()
             delta = point - self._middle_pan
@@ -370,6 +397,7 @@ class _WorkflowBoard(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        """中键松开结束平移并恢复光标。"""
         if event.button() == Qt.MiddleButton and self._middle_pan is not None:
             self._middle_pan = None
             self.unsetCursor()
@@ -378,6 +406,7 @@ class _WorkflowBoard(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def resizeEvent(self, event):
+        """窗口尺寸变化时保持自动适配缩放。"""
         super().resizeEvent(event)
         if self._auto_fit:
             QTimer.singleShot(0, self.fit_graph)
@@ -394,6 +423,7 @@ class WorkflowComposer(QWidget):
     zoom_changed = Signal(int)
 
     def __init__(self, parent=None):
+        """构建预设选择器、画布与说明行，并默认选中快速标注。"""
         super().__init__(parent)
         self.registry = WorkflowTemplateRegistry()
         self.active_template_id = QUICK_WORKFLOW.id
@@ -437,14 +467,17 @@ class WorkflowComposer(QWidget):
 
     def set_state(self, template_id: str, layouts: dict[str, dict[str, tuple[int, int]]],
                   graphs: dict[str, WorkflowGraph] | None = None):
+        """载入项目保存的布局与图，并切到对应模板。"""
         self.layouts = {key: dict(value) for key, value in layouts.items()}
         self.graphs = dict(graphs or {})
         self.select_template(template_id, emit=False)
 
     def set_preset_chooser_visible(self, visible: bool):
+        """控制顶部预设切换条是否显示。"""
         self.chooser_host.setVisible(visible)
 
     def select_template(self, template_id: str, emit=True):
+        """切换模板并重建画布；emit 为假时用于程序化恢复而不触发回调。"""
         template = self.registry.get(template_id)
         self.active_template_id = template.id
         for key, item in self.buttons.items():
@@ -466,26 +499,32 @@ class WorkflowComposer(QWidget):
             self.template_selected.emit(template.id)
 
     def _on_layout_changed(self, positions):
+        """缓存当前模板的节点位置并向外转发。"""
         self.layouts[self.active_template_id] = positions
         self.layout_changed.emit(self.active_template_id, self.layouts)
 
     def _on_graph_changed(self, graph: WorkflowGraph):
+        """缓存当前模板的图并向外转发。"""
         self.graphs[self.active_template_id] = graph
         self.graph_changed.emit(self.active_template_id, graph)
 
     def set_optional_enabled(self, step_id: str, enabled: bool):
+        """启用或移除可选步骤，并即时生效到画布。"""
         template = self.registry.get(self.active_template_id)
         graph = self.board.graph
         updated = graph.with_optional(template, step_id) if enabled else graph.without_optional(template, step_id)
         self.board.set_graph(updated)
 
     def add_edge(self, source: str, target: str) -> tuple[str, ...]:
+        """把建边请求转交给画布校验。"""
         return self.board.add_edge(source, target)
 
     def remove_edge(self, source: str, target: str) -> tuple[str, ...]:
+        """把删边请求转交给画布校验。"""
         return self.board.remove_edge(source, target)
 
     def _show_step(self, step_id: str):
+        """在说明行展示选中步骤的详情并向外广播。"""
         step = next(
             (item for item in self.registry.get(self.active_template_id).steps if item.id == step_id),
             None,

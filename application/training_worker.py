@@ -9,6 +9,7 @@ def run_training_process(data_yaml, model, epochs, runs_dir, stop_event, connect
     from core import TrainingCancelled, train_yolo_dataset
 
     def report(kind, *values):
+        """把阶段/批次/结果消息通过 Pipe 回传给父进程。"""
         connection.send((kind, *values))
 
     try:

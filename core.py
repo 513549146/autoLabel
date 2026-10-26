@@ -18,6 +18,33 @@ import config
 
 _WORKING_DIRECTORY_LOCK = threading.RLock()
 
+_LFS_POINTER_HEADER = b"version https://git-lfs.github.com/spec/v1"
+
+
+def ensure_weights(path):
+    """校验权重文件真实可用，否则抛出带修复指引的 FileNotFoundError。
+
+    未执行 git lfs pull 的检出里，权重会被替换成上百字节的指针文件。这类
+    文件能通过 os.path.isfile，却会让 torch.load 抛出含义不明的
+    "invalid load key, 'v'"，所以在加载前显式识别。
+    """
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"未找到权重文件: {path}\n"
+            "请将权重放到该路径，或把 config 中对应的权重常量设为官方文件名。"
+        )
+    with open(path, "rb") as handle:
+        head = handle.read(len(_LFS_POINTER_HEADER))
+    if head.startswith(_LFS_POINTER_HEADER):
+        raise FileNotFoundError(
+            f"权重文件是 Git LFS 指针而非真实权重: {path}\n"
+            "请在本仓库执行 git lfs install && git lfs pull 获取权重，"
+            "或从发布包拷贝 weights 目录。"
+        )
+    if not head:
+        raise FileNotFoundError(f"权重文件为空: {path}")
+    return path
+
 
 @contextmanager
 def _working_directory(path):
@@ -32,6 +59,7 @@ def _working_directory(path):
 
 
 def get_device():
+    """返回可用的推理设备：有 CUDA 用 cuda，否则回退 cpu。"""
     import torch
     return "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -45,6 +73,7 @@ def _imread_unicode(path):
 
 
 def _cxcywh_to_xyxy(box, width, height):
+    """把归一化的中心点宽高框换算成像素 xyxy 整数坐标。"""
     x_c, y_c, w, h = box
     x1 = (x_c - w / 2) * width
     y1 = (y_c - h / 2) * height
@@ -57,13 +86,16 @@ def _cxcywh_to_xyxy(box, width, height):
 # 检测器抽象：支持多种后端（YOLOE / 旧版 GD / GD 1.5 / 微调 YOLO）
 # ---------------------------------------------------------------------------
 class Detector:
+    """统一封装各检测后端的模型句柄，按 backend 字段分派到具体实现。"""
     def __init__(self, backend, model, processor=None, device=None):
+        """保存后端名、模型、处理器与设备；processor/device 仅 Grounding DINO 1.5 使用。"""
         self.backend = backend
         self.model = model
         self.processor = processor
         self.device = device
 
     def detect(self, image_path, prompt, box_threshold, text_threshold):
+        """按后端名分派检测，返回 [{name, bbox, score}] 列表。"""
         if self.backend == "gd15":
             return _detect_gd15(self, image_path, prompt, box_threshold, text_threshold)
         if self.backend == "yoloe":
@@ -95,6 +127,7 @@ def auto_label(image_path, text_prompt, detector, box_threshold=config.BOX_THRES
 # 后端 1：旧版 Grounding DINO（groundingdino 包，SwinT-OGC）
 # ---------------------------------------------------------------------------
 def _load_gd_ogc():
+    """加载旧版 Grounding DINO（SwinT-OGC 权重 + 本地 bert 文本编码器），权重缺失时抛 FileNotFoundError。"""
     from groundingdino.util.slconfig import SLConfig
     from groundingdino.models import build_model
     from groundingdino.util.misc import clean_state_dict
@@ -118,6 +151,7 @@ def _load_gd_ogc():
 
 
 def _detect_gd_ogc(detector, image_path, prompt, box_threshold, text_threshold):
+    """用旧版 Grounding DINO 推理，返回 VOC 兼容的 bbox 与置信度。"""
     from groundingdino.util.inference import predict
     from groundingdino.datasets import transforms as T
 
@@ -157,6 +191,7 @@ def _detect_gd_ogc(detector, image_path, prompt, box_threshold, text_threshold):
 # 后端 2：Grounding DINO 1.5（transformers 实现，更强）
 # ---------------------------------------------------------------------------
 def _load_gd15():
+    """从本地目录加载 Grounding DINO 1.5（transformers 实现），返回模型、处理器与设备。"""
     import torch
     from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
@@ -170,6 +205,7 @@ def _load_gd15():
 
 
 def _detect_gd15(detector, image_path, prompt, box_threshold, text_threshold):
+    """用 Grounding DINO 1.5 推理，并按标点切分 token 把命中词还原成类别名。"""
     import bisect
     import torch
 
@@ -222,11 +258,8 @@ def _load_yoloe(weights_path=None):
     from ultralytics import YOLOE
 
     path = weights_path or config.YOLOE_WEIGHTS
-    if os.path.dirname(str(path)) and not os.path.isfile(path):
-        raise FileNotFoundError(
-            f"未找到 YOLOE 权重: {path}\n"
-            "请将权重放到该路径，或把 config.YOLOE_WEIGHTS 设为官方权重文件名。"
-        )
+    if os.path.dirname(str(path)):
+        ensure_weights(path)
     return YOLOE(path)
 
 
@@ -270,6 +303,7 @@ def _detect_yoloe(detector, image_path, prompt, box_threshold, text_threshold):
 # 后端 4：微调后的 YOLO（Ultralytics，闭集检测）
 # ---------------------------------------------------------------------------
 def _load_yolo(weights_path=None):
+    """加载闭集 YOLO 权重（项目模型或微调结果），文件不存在时报错提示先训练。"""
     from ultralytics import YOLO
     path = os.path.abspath(weights_path or config.YOLO_WEIGHTS)
     if not os.path.isfile(path):
@@ -278,6 +312,7 @@ def _load_yolo(weights_path=None):
 
 
 def _detect_yolo(detector, image_path, prompt, box_threshold, text_threshold):
+    """用闭集 YOLO 推理，类别名取自模型自带的 names。"""
     model = detector.model
     results = model.predict(
         image_path,
@@ -301,6 +336,7 @@ def _detect_yolo(detector, image_path, prompt, box_threshold, text_threshold):
 # VOC 读写
 # ---------------------------------------------------------------------------
 def save_as_voc_xml(annotations, image_path, output_dir):
+    """把标注写成 VOC XML（含 score/review_state/polygon 扩展字段），文件名由图片名派生。"""
     image = _imread_unicode(image_path)
     height, width = image.shape[:2]
     filename = os.path.basename(image_path)
@@ -405,6 +441,7 @@ def load_voc_xml(xml_path):
 
 
 def _bbox_iou(first, second):
+    """计算两个 xyxy 框的交并比，用于重复框判定与候选融合。"""
     ax1, ay1, ax2, ay2 = first; bx1, by1, bx2, by2 = second
     left, top, right, bottom = max(ax1, bx1), max(ay1, by1), min(ax2, bx2), min(ay2, by2)
     overlap = max(0, right - left) * max(0, bottom - top)
@@ -621,10 +658,12 @@ def train_yolo_dataset(data_yaml, base_model, epochs, runs_dir, on_progress=None
         raise ValueError("训练轮数必须大于 0")
 
     def check_stop():
+        """协作停止检查点：命中停止请求即抛 TrainingCancelled。"""
         if should_stop and should_stop():
             raise TrainingCancelled("训练已按请求停止")
 
     def stage(message):
+        """上报当前训练阶段文案，供界面显示进度阶段。"""
         if on_stage:
             on_stage(message)
 
@@ -667,6 +706,7 @@ def train_yolo_dataset(data_yaml, base_model, epochs, runs_dir, on_progress=None
     batch_state = {"done": 0, "last_report": 0.0, "last_epoch": 0}
 
     def on_pretrain_start(trainer):
+        """预处理开始：检查停止，并包裹 get_dataloader 以便上报扫描进度。"""
         check_stop()
         stage("正在读取训练配置并准备模型")
         get_dataloader = getattr(trainer, "get_dataloader", None)
@@ -682,22 +722,26 @@ def train_yolo_dataset(data_yaml, base_model, epochs, runs_dir, on_progress=None
             trainer.get_dataloader = reported_get_dataloader
 
     def on_pretrain_end(trainer):
+        """预处理结束：数据加载器就绪，检查一次停止请求。"""
         check_stop()
         stage("训练与验证数据加载器已就绪，准备开始训练")
 
     def on_train_start(trainer):
+        """训练开始时上报训练集与验证集张数。"""
         check_stop()
         train_count = len(trainer.train_loader.dataset)
         val_count = len(trainer.test_loader.dataset)
         stage(f"开始训练：训练 {train_count} 张，验证 {val_count} 张，共 {epochs} 轮")
 
     def on_epoch_start(trainer):
+        """每轮开始重置批次计数并上报轮次。"""
         check_stop()
         batch_state["done"] = 0
         batch_state["last_report"] = 0.0
         stage(f"第 {int(trainer.epoch) + 1}/{trainer.epochs} 轮：训练批次进行中")
 
     def on_batch_end(trainer):
+        """批次结束时按 1.5 秒节流上报批次进度，首尾批次必定上报。"""
         check_stop()
         batch_state["done"] += 1
         total = len(trainer.train_loader)
@@ -707,10 +751,12 @@ def train_yolo_dataset(data_yaml, base_model, epochs, runs_dir, on_progress=None
             batch_state["last_report"] = now
 
     def on_epoch_train_end(trainer):
+        """每轮训练批次结束后上报正在验证与保存。"""
         check_stop()
         stage(f"第 {int(trainer.epoch) + 1}/{trainer.epochs} 轮：训练批次完成，正在验证与保存")
 
     def on_fit_epoch_end(trainer):
+        """每轮评估后上报 loss 与 mAP；跳过 Ultralytics 末尾的最佳模型复评回调。"""
         check_stop()
         current = int(getattr(trainer, "epoch", -1)) + 1
         if current <= batch_state["last_epoch"] or current > int(trainer.epochs):
@@ -774,6 +820,7 @@ def train_yolo_dataset(data_yaml, base_model, epochs, runs_dir, on_progress=None
 
 def batch_process(input_dir=config.INPUT_DIR, output_dir=config.OUTPUT_DIR, prompt=config.PROMPT,
                   box_threshold=config.BOX_THRESHOLD, text_threshold=config.TEXT_THRESHOLD):
+    """命令行批处理：对目录内全部图片跑检测并写 XML（不涉及项目数据库）。"""
     os.makedirs(output_dir, exist_ok=True)
     detector = load_models()
 

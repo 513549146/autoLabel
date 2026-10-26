@@ -15,11 +15,13 @@ import config
 
 
 class AnnotationWorkflowMode(str, Enum):
+    """标注流程模式：当前只有 quick 可执行，own_model 为预留。"""
     QUICK = "quick"
     OWN_MODEL = "own_model"
 
 
 class RecoveryPolicy(str, Enum):
+    """补扫策略：关闭、仅空标注补扫、或每张图片都双模型补扫。"""
     OFF = "off"
     EMPTY_ONLY = "empty_only"
     ALL_IMAGES = "all_images"
@@ -38,6 +40,7 @@ class QuickAnnotationConfig:
     scope: str = "new"
 
     def normalized(self) -> "QuickAnnotationConfig":
+        """规范化用户输入：统一提示词分隔符、夹紧置信度、校验范围与补扫策略。"""
         prompt = " . ".join(part.strip() for part in self.prompt.split(".") if part.strip())
         if not prompt:
             raise ValueError("类别提示词不能为空")
@@ -51,6 +54,7 @@ class QuickAnnotationConfig:
 
 @dataclass(frozen=True)
 class QuickAnnotationRequest:
+    """一次快速标注请求：项目目录、配置与可选的显式文件列表。"""
     project_root: str
     images_dir: str
     annotations_dir: str
@@ -58,11 +62,13 @@ class QuickAnnotationRequest:
     filenames: tuple[str, ...] = ()
 
     def with_filenames(self, filenames: list[str] | tuple[str, ...]) -> "QuickAnnotationRequest":
+        """派生一个指定文件列表的新请求。"""
         return replace(self, filenames=tuple(filenames))
 
 
 @dataclass(frozen=True)
 class QuickImageResult:
+    """单张图片的快速标注结果：候选数、风险分、命中规则与参与模型。"""
     filename: str
     prediction_count: int
     risk_score: int
@@ -72,15 +78,18 @@ class QuickImageResult:
 
 @dataclass(frozen=True)
 class QuickAnnotationResult:
+    """整批快速标注结果，并提供按文件名与高风险统计的便捷视图。"""
     completed: tuple[QuickImageResult, ...]
     stopped: bool
 
     @property
     def filenames(self) -> tuple[str, ...]:
+        """返回本次实际完成的文件名。"""
         return tuple(item.filename for item in self.completed)
 
     @property
     def high_risk_count(self) -> int:
+        """统计风险分达到高风险的图片数量。"""
         return sum(1 for item in self.completed if item.risk_score >= config.REVIEW_HIGH_RISK)
 
 
@@ -90,6 +99,7 @@ class AnnotationWorkflow(Protocol):
     mode: AnnotationWorkflowMode
 
     def plan(self, request: QuickAnnotationRequest) -> tuple[str, ...]:
+        """各流程实现的公共入口：只做校验与选片，不产生副作用。"""
         ...
 
 
@@ -100,6 +110,7 @@ class QuickAnnotationSettings:
 
     @classmethod
     def load(cls, project) -> QuickAnnotationConfig:
+        """从 metadata 读取设置；字段缺失或损坏时回退默认配置。"""
         if not project:
             return QuickAnnotationConfig()
         try:
@@ -120,6 +131,7 @@ class QuickAnnotationSettings:
 
     @classmethod
     def save(cls, project, settings: QuickAnnotationConfig) -> None:
+        """规范化后以 JSON 写入项目 metadata。"""
         normalized = settings.normalized()
         project.set_metadata_value(
             cls.METADATA_KEY,
@@ -145,4 +157,5 @@ class OwnModelWorkflowPlaceholder:
     mode = AnnotationWorkflowMode.OWN_MODEL
 
     def plan(self, request: QuickAnnotationRequest) -> tuple[str, ...]:
+        """预留接口：自有模型流程尚未实现，调用即抛 NotImplementedError。"""
         raise NotImplementedError("自有模型模式尚未接入；请使用快速标注模式")

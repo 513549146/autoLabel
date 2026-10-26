@@ -21,6 +21,7 @@ from application.training_worker import run_training_process
 
 
 def stop_tree(process):
+    """终止训练进程及其全部子进程，先 terminate 再对残留进程 kill。"""
     if not process.is_alive():
         return
     parent = psutil.Process(process.pid)
@@ -39,6 +40,7 @@ def stop_tree(process):
 
 
 def main():
+    """以与打包一致的方式拉起训练子进程，验证冻结环境下的报告通道与停止能力。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", required=True)
     parser.add_argument("--data", required=True)
