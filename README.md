@@ -14,6 +14,8 @@ autoLabel 是本地桌面图片标注工作台：在同一个项目中完成图�
 - [常见问题](#常见问题)
 - [开发与验证](#开发与验证)
 
+第一次接手代码可先读[开发者上手指南](docs/developer-guide.md)：入口、模块职责、图片生命周期和修改位置都在其中。
+
 ## 安装与启动
 
 需要 Python 3.10+。在仓库目录执行：
@@ -128,11 +130,12 @@ python main.py
 | 位置 | 职责 |
 | --- | --- |
 | `main.py`、`gui/qt_workbench.py` | 启动并转发到当前 Qt 工作台；没有旧版 Tk 页面入口 |
-| `gui/workbench.py`、`gui/pages/` | 无边框窗口、项目切换及各业务页面 |
+| `gui/workbench.py`、`gui/pages/` | 无边框窗口、项目切换及各业务页面；审核清单、缩略图和翻页逻辑各有独立模块 |
 | `gui/canvas.py` | 图片缩放、平移、框编辑、选择反馈与撤销/重做 |
+| `gui/ui.py`、`gui/icons.py`、`gui/theme.py` | 通用 Qt 控件、图标与统一样式 |
 | `application/` | 模型预标注、快速流程、审核路由和训练服务 |
-| `core.py` | VOC XML、质量规则、YOLO 数据集转换与训练调用 |
-| `project.py` | 项目清单、项目级 SQLite、最近项目工作区记录 |
+| `core.py`、`engine/` | 检测后端与兼容入口；VOC XML、质量规则、YOLO 数据集转换与训练执行分模块实现 |
+| `project.py`、`storage/` | 兼容入口；项目清单、项目级 SQLite、最近项目工作区记录分模块实现 |
 
 每个项目都是可复制的独立目录：
 

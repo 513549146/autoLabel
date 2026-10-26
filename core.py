@@ -1,47 +1,35 @@
-import math
+"""检测模型入口，并兼容原有 ``core`` 调用接口。
+
+XML、质量规则、训练集和训练执行已分别移入 engine/；调用方仍可从本模块导入。
+"""
+
+from __future__ import annotations
+
 import os
-import hashlib
-import json
-import shutil
 import sys
-import threading
-import time
-import uuid
-from contextlib import contextmanager
-from xml.etree import ElementTree as ET
 
 import cv2
 from PIL import Image
 
 import config
-
-
-_WORKING_DIRECTORY_LOCK = threading.RLock()
-
-
-@contextmanager
-def _working_directory(path):
-    """Temporarily use an explicit working directory for third-party model assets."""
-    with _WORKING_DIRECTORY_LOCK:
-        previous = os.getcwd()
-        os.chdir(path)
-        try:
-            yield
-        finally:
-            os.chdir(previous)
+from engine.image_io import _working_directory, _imread_unicode
+from engine.annotations import (
+    _bbox_iou,
+    annotation_issues,
+    annotation_risk,
+    list_images,
+    load_voc_xml,
+    parse_categories,
+    save_as_voc_xml,
+)
+from engine.datasets import export_yolo_dataset, training_readiness
+from engine.training import TrainingCancelled, train_yolo_dataset
 
 
 def get_device():
     import torch
+
     return "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def _imread_unicode(path):
-    """读取图片，兼容含中文等非 ASCII 字符的路径（cv2.imread 在 Windows 上无法处理）"""
-    import numpy as np
-    with open(path, "rb") as f:
-        data = np.frombuffer(f.read(), dtype=np.uint8)
-    return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
 def _cxcywh_to_xyxy(box, width, height):
@@ -53,10 +41,9 @@ def _cxcywh_to_xyxy(box, width, height):
     return int(x1), int(y1), int(x2), int(y2)
 
 
-# ---------------------------------------------------------------------------
-# 检测器抽象：支持多种后端（YOLOE / 旧版 GD / GD 1.5 / 微调 YOLO）
-# ---------------------------------------------------------------------------
 class Detector:
+    """统一四种检测后端的单张图片推理接口。"""
+
     def __init__(self, backend, model, processor=None, device=None):
         self.backend = backend
         self.model = model
@@ -86,14 +73,13 @@ def load_models(backend=None, weights_path=None):
     return Detector("gd_ogc", _load_gd_ogc(), None, get_device())
 
 
-def auto_label(image_path, text_prompt, detector, box_threshold=config.BOX_THRESHOLD, text_threshold=config.TEXT_THRESHOLD):
+def auto_label(
+    image_path, text_prompt, detector, box_threshold=config.BOX_THRESHOLD, text_threshold=config.TEXT_THRESHOLD
+):
     """检测单张图片，返回目标列表 [{name, bbox, score}]"""
     return detector.detect(image_path, text_prompt, box_threshold, text_threshold)
 
 
-# ---------------------------------------------------------------------------
-# 后端 1：旧版 Grounding DINO（groundingdino 包，SwinT-OGC）
-# ---------------------------------------------------------------------------
 def _load_gd_ogc():
     from groundingdino.util.slconfig import SLConfig
     from groundingdino.models import build_model
@@ -153,9 +139,6 @@ def _detect_gd_ogc(detector, image_path, prompt, box_threshold, text_threshold):
     return annotations
 
 
-# ---------------------------------------------------------------------------
-# 后端 2：Grounding DINO 1.5（transformers 实现，更强）
-# ---------------------------------------------------------------------------
 def _load_gd15():
     import torch
     from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
@@ -184,9 +167,9 @@ def _detect_gd15(detector, image_path, prompt, box_threshold, text_threshold):
     with torch.no_grad():
         outputs = model(**inputs)
 
-    probs = torch.sigmoid(outputs.logits)[0].cpu()          # [num_queries, 256]
+    probs = torch.sigmoid(outputs.logits)[0].cpu()  # [num_queries, 256]
     scores, max_tok = probs.max(dim=-1)
-    boxes_cxcywh = outputs.pred_boxes[0].cpu()              # [num_queries, 4] 归一化 cxcywh
+    boxes_cxcywh = outputs.pred_boxes[0].cpu()  # [num_queries, 4] 归一化 cxcywh
 
     input_ids = inputs.input_ids[0].cpu().tolist()
     tokenizer = processor.tokenizer
@@ -214,9 +197,6 @@ def _detect_gd15(detector, image_path, prompt, box_threshold, text_threshold):
     return annotations
 
 
-# ---------------------------------------------------------------------------
-# 后端 3：YOLOE（Ultralytics，开放词表检测）
-# ---------------------------------------------------------------------------
 def _load_yoloe(weights_path=None):
     """加载 YOLOE；官方裸文件名在首次使用时由 Ultralytics 自动下载并缓存。"""
     from ultralytics import YOLOE
@@ -224,8 +204,7 @@ def _load_yoloe(weights_path=None):
     path = weights_path or config.YOLOE_WEIGHTS
     if os.path.dirname(str(path)) and not os.path.isfile(path):
         raise FileNotFoundError(
-            f"未找到 YOLOE 权重: {path}\n"
-            "请将权重放到该路径，或把 config.YOLOE_WEIGHTS 设为官方权重文件名。"
+            f"未找到 YOLOE 权重: {path}\n" "请将权重放到该路径，或把 config.YOLOE_WEIGHTS 设为官方权重文件名。"
         )
     return YOLOE(path)
 
@@ -243,9 +222,7 @@ def _detect_yoloe(detector, image_path, prompt, box_threshold, text_threshold):
     """以文本类别提示运行 YOLOE，并输出与现有 VOC 管线一致的检测框。"""
     model = detector.model
     classes = _parse_yoloe_classes(prompt)
-    # Ultralytics MobileCLIP resolves its auxiliary checkpoint from the process
-    # working directory. Keep it alongside the primary YOLOE weights instead of
-    # downloading another copy beside the executable.
+    # MobileCLIP 从当前工作目录查找辅助权重；临时切到权重目录，避免重复下载。
     with _working_directory(config.WEIGHTS_DIR):
         model.set_classes(classes)
     results = model.predict(
@@ -266,11 +243,9 @@ def _detect_yoloe(detector, image_path, prompt, box_threshold, text_threshold):
     return annotations
 
 
-# ---------------------------------------------------------------------------
-# 后端 4：微调后的 YOLO（Ultralytics，闭集检测）
-# ---------------------------------------------------------------------------
 def _load_yolo(weights_path=None):
     from ultralytics import YOLO
+
     path = os.path.abspath(weights_path or config.YOLO_WEIGHTS)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"未找到 YOLO 权重: {path}\n请先完成微调训练，或在自动标注页导入自定义 .pt 模型")
@@ -297,483 +272,13 @@ def _detect_yolo(detector, image_path, prompt, box_threshold, text_threshold):
     return annotations
 
 
-# ---------------------------------------------------------------------------
-# VOC 读写
-# ---------------------------------------------------------------------------
-def save_as_voc_xml(annotations, image_path, output_dir):
-    image = _imread_unicode(image_path)
-    height, width = image.shape[:2]
-    filename = os.path.basename(image_path)
-
-    root = ET.Element("annotation")
-    ET.SubElement(root, "folder").text = "images"
-    ET.SubElement(root, "filename").text = filename
-    ET.SubElement(root, "path").text = os.path.abspath(image_path)
-
-    source = ET.SubElement(root, "source")
-    ET.SubElement(source, "database").text = "Unknown"
-
-    size = ET.SubElement(root, "size")
-    ET.SubElement(size, "width").text = str(width)
-    ET.SubElement(size, "height").text = str(height)
-    ET.SubElement(size, "depth").text = "3"
-
-    ET.SubElement(root, "segmented").text = "0"
-
-    for ann in annotations:
-        obj = ET.SubElement(root, "object")
-        ET.SubElement(obj, "name").text = ann["name"]
-        ET.SubElement(obj, "pose").text = "Unspecified"
-        ET.SubElement(obj, "truncated").text = "0"
-        ET.SubElement(obj, "difficult").text = "0"
-
-        # ``score``, ``review_state`` and ``polygon`` are small VOC extensions. Readers that only
-        # understand VOC bounding boxes keep working; autoLabel can retain model
-        # confidence and editable polygon geometry across review sessions.
-        score = ann.get("score")
-        if score is not None:
-            try:
-                ET.SubElement(obj, "score").text = f"{float(score):.6f}"
-            except (TypeError, ValueError):
-                pass
-        if ann.get("origin") in {"manual", "revised", "verified"}:
-            ET.SubElement(obj, "review_state").text = ann["origin"]
-
-        points = ann.get("points") or []
-        if ann.get("type") == "polygon" and len(points) >= 3:
-            polygon = ET.SubElement(obj, "polygon")
-            for point in points:
-                try:
-                    x, y = point[:2]
-                except (TypeError, ValueError, IndexError):
-                    continue
-                node = ET.SubElement(polygon, "pt")
-                try:
-                    ET.SubElement(node, "x").text = str(int(round(float(x))))
-                    ET.SubElement(node, "y").text = str(int(round(float(y))))
-                except (TypeError, ValueError, IndexError):
-                    polygon.remove(node)
-
-        bndbox = ET.SubElement(obj, "bndbox")
-        x1, y1, x2, y2 = ann["bbox"]
-        ET.SubElement(bndbox, "xmin").text = str(x1)
-        ET.SubElement(bndbox, "ymin").text = str(y1)
-        ET.SubElement(bndbox, "xmax").text = str(x2)
-        ET.SubElement(bndbox, "ymax").text = str(y2)
-
-    out_name = os.path.splitext(filename)[0] + ".xml"
-    tree = ET.ElementTree(root)
-    ET.indent(tree, space="  ")
-    tree.write(os.path.join(output_dir, out_name), encoding="utf-8", xml_declaration=True)
-
-
-def load_voc_xml(xml_path):
-    """Read VOC boxes plus autoLabel's score, review-state and polygon extensions."""
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
-    annotations = []
-    for obj in root.findall("object"):
-        name = obj.findtext("name", "")
-        bndbox = obj.find("bndbox")
-        if bndbox is None:
-            continue
-        x1 = int(float(bndbox.findtext("xmin", "0")))
-        y1 = int(float(bndbox.findtext("ymin", "0")))
-        x2 = int(float(bndbox.findtext("xmax", "0")))
-        y2 = int(float(bndbox.findtext("ymax", "0")))
-        annotation = {"name": name, "bbox": [x1, y1, x2, y2]}
-        try:
-            score = obj.findtext("score")
-            if score is not None:
-                annotation["score"] = float(score)
-        except ValueError:
-            pass
-        origin = obj.findtext("review_state")
-        if origin in {"manual", "revised", "verified"}:
-            annotation["origin"] = origin
-        points = []
-        for point in obj.findall("polygon/pt"):
-            try:
-                points.append([int(float(point.findtext("x", "0"))), int(float(point.findtext("y", "0")))])
-            except ValueError:
-                continue
-        if len(points) >= 3:
-            annotation["type"] = "polygon"
-            annotation["points"] = points
-        annotations.append(annotation)
-    return annotations
-
-
-def _bbox_iou(first, second):
-    ax1, ay1, ax2, ay2 = first; bx1, by1, bx2, by2 = second
-    left, top, right, bottom = max(ax1, bx1), max(ay1, by1), min(ax2, bx2), min(ay2, by2)
-    overlap = max(0, right - left) * max(0, bottom - top)
-    if not overlap:
-        return 0.0
-    union = max(1, (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - overlap)
-    return overlap / union
-
-
-def annotation_issues(annotations, image_path=None):
-    """Return deterministic QA rule names for an annotation collection."""
-    if not annotations:
-        return {"empty"}
-    image_width = image_height = 0
-    if image_path:
-        image = _imread_unicode(image_path)
-        if image is not None:
-            image_height, image_width = image.shape[:2]
-    issues = set()
-    for index, annotation in enumerate(annotations):
-        try:
-            x1, y1, x2, y2 = [float(value) for value in annotation.get("bbox", (0, 0, 0, 0))]
-        except (TypeError, ValueError):
-            issues.add("invalid"); continue
-        if not all(math.isfinite(value) for value in (x1, y1, x2, y2)):
-            issues.add("invalid"); continue
-        width, height = abs(x2 - x1), abs(y2 - y1)
-        if width * height < config.REVIEW_MIN_BOX_AREA:
-            issues.add("tiny")
-        if image_width > 0 and (x1 < 0 or y1 < 0 or x2 > image_width or y2 > image_height):
-            issues.add("out_of_bounds")
-        try:
-            if annotation.get("score") is not None and float(annotation["score"]) < config.REVIEW_LOW_CONFIDENCE:
-                issues.add("low_confidence")
-        except (TypeError, ValueError):
-            issues.add("invalid")
-        current = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
-        for other in annotations[:index]:
-            try:
-                ox1, oy1, ox2, oy2 = [float(value) for value in other.get("bbox", (0, 0, 0, 0))]
-            except (TypeError, ValueError):
-                continue
-            compared = (min(ox1, ox2), min(oy1, oy2), max(ox1, ox2), max(oy1, oy2))
-            if annotation.get("name") == other.get("name") and _bbox_iou(current, compared) >= config.REVIEW_DUPLICATE_IOU:
-                issues.add("duplicate")
-    return issues
-
-
-def annotation_risk(annotations, image_path=None):
-    """Score review urgency from explicit quality rules and model uncertainty."""
-    issues = annotation_issues(annotations, image_path)
-    weights = {
-        "invalid": 100, "empty": 90, "out_of_bounds": 55, "duplicate": 35,
-        "tiny": 25, "low_confidence": 30,
-    }
-    score = sum(weights.get(issue, 0) for issue in issues)
-    scores = []
-    for annotation in annotations:
-        try:
-            if annotation.get("score") is not None:
-                scores.append(float(annotation["score"]))
-        except (TypeError, ValueError):
-            pass
-    if scores:
-        score += round(max(0.0, config.REVIEW_LOW_CONFIDENCE - min(scores)) * 100)
-    return min(100, score), issues
-
-
-def parse_categories(prompt):
-    """从提示词中解析类别列表（以 . 分隔）"""
-    return [p.strip() for p in prompt.split(".") if p.strip()]
-
-
-def list_images(input_dir):
-    """返回目录下所有支持的图片文件名（排序后）"""
-    return [f for f in sorted(os.listdir(input_dir)) if f.lower().endswith(config.IMG_EXT)]
-
-
-def export_yolo_dataset(images_dir, annotations_dir, filenames, output_dir, categories=None, validation_ratio=0.2):
-    """Export reviewed VOC annotations as an atomic YOLO detection dataset.
-
-    Polygon annotations are exported through their enclosing boxes so rectangle
-    and polygon review results can be trained together with a detection model.
-    """
-    names = [str(filename) for filename in filenames if os.path.isfile(os.path.join(images_dir, filename))]
-    if not names:
-        raise ValueError("没有可导出的已通过图片")
-    try:
-        validation_ratio = float(validation_ratio)
-    except (TypeError, ValueError) as error:
-        raise ValueError("验证集比例必须是 0 到 0.9 之间的数字") from error
-    if not 0 < validation_ratio < 0.9:
-        raise ValueError("验证集比例必须在 0 到 0.9 之间")
-
-    annotations_by_file, discovered = {}, []
-    for filename in names:
-        xml_path = os.path.join(annotations_dir, os.path.splitext(filename)[0] + ".xml")
-        try:
-            shapes = load_voc_xml(xml_path) if os.path.isfile(xml_path) else []
-        except (ET.ParseError, OSError, ValueError):
-            shapes = []
-        annotations_by_file[filename] = shapes
-        for shape in shapes:
-            name = str(shape.get("name", "")).strip()
-            if name and name not in discovered:
-                discovered.append(name)
-    labels = []
-    for category in categories or []:
-        category = str(category).strip()
-        if category and category not in labels:
-            labels.append(category)
-    labels.extend(name for name in discovered if name not in labels)
-    if not labels:
-        raise ValueError("已通过图片中没有有效类别，无法生成训练集")
-    class_ids = {name: index for index, name in enumerate(labels)}
-
-    ordered = sorted(names, key=lambda name: hashlib.sha1(name.encode("utf-8")).hexdigest())
-    validation_count = max(1, round(len(ordered) * validation_ratio)) if len(ordered) > 1 else 0
-    validation_names = set(ordered[:validation_count])
-    root = os.path.abspath(output_dir)
-    parent = os.path.dirname(root)
-    os.makedirs(parent, exist_ok=True)
-    staging = os.path.join(parent, f".{os.path.basename(root)}.autolabel-export-{uuid.uuid4().hex}")
-    os.makedirs(staging, exist_ok=False)
-    try:
-        for split in ("train", "val"):
-            os.makedirs(os.path.join(staging, "images", split), exist_ok=True)
-            os.makedirs(os.path.join(staging, "labels", split), exist_ok=True)
-        image_counts = {"train": 0, "val": 0}
-        object_count = 0
-        for filename in names:
-            split = "val" if filename in validation_names else "train"
-            source = os.path.join(images_dir, filename)
-            destination = os.path.join(staging, "images", split, filename)
-            shutil.copy2(source, destination)
-            try:
-                with Image.open(source) as image:
-                    width, height = image.size
-            except OSError as error:
-                raise ValueError(f"无法读取图片尺寸：{filename}") from error
-            lines = []
-            for shape in annotations_by_file[filename]:
-                class_id = class_ids.get(str(shape.get("name", "")).strip())
-                if class_id is None or width <= 0 or height <= 0:
-                    continue
-                try:
-                    x1, y1, x2, y2 = [float(value) for value in shape.get("bbox", ())]
-                except (TypeError, ValueError):
-                    continue
-                left, top = max(0.0, min(x1, x2)), max(0.0, min(y1, y2))
-                right, bottom = min(float(width), max(x1, x2)), min(float(height), max(y1, y2))
-                if right <= left or bottom <= top:
-                    continue
-                center_x, center_y = (left + right) / 2 / width, (top + bottom) / 2 / height
-                box_width, box_height = (right - left) / width, (bottom - top) / height
-                lines.append(f"{class_id} {center_x:.6f} {center_y:.6f} {box_width:.6f} {box_height:.6f}")
-            label_path = os.path.join(staging, "labels", split, os.path.splitext(filename)[0] + ".txt")
-            with open(label_path, "w", encoding="utf-8", newline="\n") as file:
-                file.write("\n".join(lines))
-            image_counts[split] += 1
-            object_count += len(lines)
-        yaml_path = os.path.join(staging, "data.yaml")
-        with open(yaml_path, "w", encoding="utf-8", newline="\n") as file:
-            file.write(f"path: {json.dumps(root.replace(os.sep, '/'), ensure_ascii=False)}\ntrain: images/train\nval: images/val\n\nnames:\n")
-            for index, category in enumerate(labels):
-                file.write(f"  {index}: {json.dumps(category, ensure_ascii=False)}\n")
-        if os.path.isdir(root):
-            shutil.rmtree(root)
-        os.replace(staging, root)
-        return {
-            "root": root, "data_yaml": os.path.join(root, "data.yaml"), "classes": labels,
-            "train_images": image_counts["train"], "val_images": image_counts["val"], "objects": object_count, "validation_ratio": validation_ratio,
-        }
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-
-
-def training_readiness(annotations_dir, filenames, categories=None):
-    """Summarize label coverage for the approved-set quality gate."""
-    class_counts = {str(name): 0 for name in categories or [] if str(name).strip()}
-    labels_by_file, empty = {}, []
-    for filename in filenames:
-        xml_path = os.path.join(annotations_dir, os.path.splitext(filename)[0] + ".xml")
-        try:
-            shapes = load_voc_xml(xml_path) if os.path.isfile(xml_path) else []
-        except (ET.ParseError, OSError, ValueError):
-            shapes = []
-        labels = [str(shape.get("name", "")).strip() for shape in shapes if str(shape.get("name", "")).strip()]
-        labels_by_file[filename] = sorted(set(labels))
-        if not labels:
-            empty.append(filename)
-        for name in labels:
-            class_counts[name] = class_counts.get(name, 0) + 1
-    missing = [name for name, count in class_counts.items() if count == 0]
-    sparse = [name for name, count in class_counts.items() if 0 < count < 10]
-    return {"class_counts": class_counts, "labels_by_file": labels_by_file, "empty": empty, "missing": missing, "sparse": sparse}
-
-
-class TrainingCancelled(Exception):
-    """The user requested a cooperative stop of the current training run."""
-
-
-def train_yolo_dataset(data_yaml, base_model, epochs, runs_dir, on_progress=None,
-                       on_stage=None, on_batch=None, should_stop=None):
-    """Run Ultralytics training and return the resulting run and best weight paths."""
-    if not os.path.isfile(data_yaml):
-        raise FileNotFoundError("请先导出训练集（未找到 data.yaml）")
-    try:
-        epochs = int(epochs)
-    except (TypeError, ValueError) as error:
-        raise ValueError("训练轮数必须是正整数") from error
-    if epochs < 1:
-        raise ValueError("训练轮数必须大于 0")
-
-    def check_stop():
-        if should_stop and should_stop():
-            raise TrainingCancelled("训练已按请求停止")
-
-    def stage(message):
-        if on_stage:
-            on_stage(message)
-
-    check_stop()
-    data_yaml = os.path.abspath(data_yaml)
-    runs_dir = os.path.abspath(runs_dir)
-    if not os.path.isabs(base_model):
-        candidates = (
-            os.path.join(config.WEIGHTS_DIR, base_model),
-            os.path.join(config.BUNDLE_DIR, base_model),
-            os.path.abspath(base_model),
-        )
-        base_model = next((path for path in candidates if os.path.isfile(path)), base_model)
-    if getattr(sys, 'frozen', False) and not os.path.isfile(base_model):
-        raise FileNotFoundError(f"发布包缺少预训练模型 {base_model}；请重新获取完整安装包")
-    amp_reference = os.path.join(config.BUNDLE_DIR, 'yolo26n.pt')
-    if getattr(sys, 'frozen', False) and not os.path.isfile(amp_reference):
-        raise FileNotFoundError("发布包缺少混合精度检查模型 yolo26n.pt；请重新获取完整安装包")
-    dataset_root = os.path.dirname(os.path.abspath(data_yaml))
-    image_dirs = [os.path.join(dataset_root, "images", split) for split in ("train", "val")]
-    train_images = 0
-    if all(os.path.isdir(path) for path in image_dirs):
-        counts = [sum(name.lower().endswith(config.IMG_EXT) for name in os.listdir(path)) for path in image_dirs]
-        train_images = counts[0]
-        stage(f"数据集就绪：训练 {counts[0]} 张，验证 {counts[1]} 张")
-    stage("正在加载预训练模型")
-    from ultralytics import YOLO
-
-    os.makedirs(runs_dir, exist_ok=True)
-    model = YOLO(base_model)
-    check_stop()
-    stage("正在检查数据集并扫描图片与标签；首次运行可能较久")
-    # On Windows, too many frozen workers spend more time restarting the large
-    # application process than loading a small dataset. Keep parallel loading,
-    # and scale it up only when there are enough images to benefit from it.
-    train_workers = None
-    if os.name == "nt":
-        train_workers = min(4 if train_images >= 512 else 2, max(1, (os.cpu_count() or 2) // 2))
-        stage(f"数据加载计划：{train_workers} 个训练工作进程（大数据集自动增加）")
-    batch_state = {"done": 0, "last_report": 0.0, "last_epoch": 0}
-
-    def on_pretrain_start(trainer):
-        check_stop()
-        stage("正在读取训练配置并准备模型")
-        get_dataloader = getattr(trainer, "get_dataloader", None)
-        if callable(get_dataloader):
-            def reported_get_dataloader(*args, **kwargs):
-                check_stop()
-                split = "验证" if kwargs.get("mode") == "val" else "训练"
-                stage(f"正在扫描{split}集并启动数据加载进程")
-                loader = get_dataloader(*args, **kwargs)
-                check_stop()
-                stage(f"{split}集数据加载器已就绪")
-                return loader
-            trainer.get_dataloader = reported_get_dataloader
-
-    def on_pretrain_end(trainer):
-        check_stop()
-        stage("训练与验证数据加载器已就绪，准备开始训练")
-
-    def on_train_start(trainer):
-        check_stop()
-        train_count = len(trainer.train_loader.dataset)
-        val_count = len(trainer.test_loader.dataset)
-        stage(f"开始训练：训练 {train_count} 张，验证 {val_count} 张，共 {epochs} 轮")
-
-    def on_epoch_start(trainer):
-        check_stop()
-        batch_state["done"] = 0
-        batch_state["last_report"] = 0.0
-        stage(f"第 {int(trainer.epoch) + 1}/{trainer.epochs} 轮：训练批次进行中")
-
-    def on_batch_end(trainer):
-        check_stop()
-        batch_state["done"] += 1
-        total = len(trainer.train_loader)
-        now = time.monotonic()
-        if on_batch and (batch_state["done"] in (1, total) or now - batch_state["last_report"] >= 1.5):
-            on_batch(int(trainer.epoch) + 1, int(trainer.epochs), batch_state["done"], total)
-            batch_state["last_report"] = now
-
-    def on_epoch_train_end(trainer):
-        check_stop()
-        stage(f"第 {int(trainer.epoch) + 1}/{trainer.epochs} 轮：训练批次完成，正在验证与保存")
-
-    def on_fit_epoch_end(trainer):
-        check_stop()
-        current = int(getattr(trainer, "epoch", -1)) + 1
-        if current <= batch_state["last_epoch"] or current > int(trainer.epochs):
-            return  # Ultralytics also calls this during final best-model evaluation.
-        batch_state["last_epoch"] = current
-        details = []
-        try:
-            losses = trainer.label_loss_items(getattr(trainer, "tloss", None), prefix="train")
-            details.extend(f"{name}={float(value):.4f}" for name, value in losses.items())
-        except Exception:
-            pass
-        try:
-            for name, value in (getattr(trainer, "metrics", {}) or {}).items():
-                if "map" in str(name).lower():
-                    details.append(f"{name}={float(value):.4f}")
-        except Exception:
-            pass
-        if on_progress:
-            on_progress(current, int(trainer.epochs), " · ".join(details))
-
-    model.add_callback("on_pretrain_routine_start", on_pretrain_start)
-    model.add_callback("on_pretrain_routine_end", on_pretrain_end)
-    model.add_callback("on_train_start", on_train_start)
-    model.add_callback("on_train_epoch_start", on_epoch_start)
-    model.add_callback("on_train_batch_start", lambda trainer: check_stop())
-    model.add_callback("on_train_batch_end", on_batch_end)
-    model.add_callback("on_train_epoch_end", on_epoch_train_end)
-    model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
-    model.add_callback("on_val_batch_end", lambda validator: check_stop())
-    model.add_callback("on_train_end", lambda trainer: stage("训练完成，正在整理最优权重"))
-    try:
-        train_options = {"data": data_yaml, "epochs": epochs, "project": runs_dir,
-                         "name": "finetune", "exist_ok": False, "verbose": True}
-        if train_workers is not None:
-            train_options["workers"] = train_workers
-        # Ultralytics' GPU AMP check loads "yolo26n.pt" by bare filename.
-        # Resolve it from the frozen bundle without copying or downloading it.
-        if os.path.isfile(amp_reference):
-            with _working_directory(config.BUNDLE_DIR):
-                model.train(**train_options)
-        else:
-            model.train(**train_options)
-        check_stop()
-    except TrainingCancelled:
-        trainer = getattr(model, "trainer", None)
-        if trainer is not None:
-            for name in ("train_loader", "test_loader"):
-                loader = getattr(trainer, name, None)
-                if hasattr(loader, "close"):
-                    try:
-                        loader.close()
-                    except Exception:
-                        pass
-        raise
-    run_dir = str(model.trainer.save_dir)
-    best = os.path.join(run_dir, "weights", "best.pt")
-    if not os.path.isfile(best):
-        raise FileNotFoundError("训练结束但未找到 best.pt")
-    return {"run_dir": run_dir, "best_weights": best}
-
-
-def batch_process(input_dir=config.INPUT_DIR, output_dir=config.OUTPUT_DIR, prompt=config.PROMPT,
-                  box_threshold=config.BOX_THRESHOLD, text_threshold=config.TEXT_THRESHOLD):
+def batch_process(
+    input_dir=config.INPUT_DIR,
+    output_dir=config.OUTPUT_DIR,
+    prompt=config.PROMPT,
+    box_threshold=config.BOX_THRESHOLD,
+    text_threshold=config.TEXT_THRESHOLD,
+):
     os.makedirs(output_dir, exist_ok=True)
     detector = load_models()
 
