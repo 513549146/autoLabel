@@ -8,6 +8,23 @@ from ..canvas import ImageCanvas
 from application.preannotation import ImagePreannotationService
 from project import QUALITY_RULES_VERSION
 
+
+class _ElidedLabel(QLabel):
+    """Keep a flexible drawer column aligned without losing its full text."""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self._full_text = text
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setMinimumWidth(0)
+        self.setToolTip(text)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.setText(self.fontMetrics().elidedText(self._full_text, Qt.ElideRight, self.contentsRect().width()))
+
+
 class ReviewPage(QWidget):
     quality_index_finished = Signal(int, str, object)
 
@@ -33,11 +50,10 @@ class ReviewPage(QWidget):
         self.position = label("0 / 0", "pagingPosition"); self.position.setAlignment(Qt.AlignCenter); self.position.setFixedSize(112, 40); paging_layout.addWidget(self.position)
         self.next = tool(paging, QIcon(), "下一张（→）；长按快速跳转"); self.next.setObjectName("pagingChevron"); self.next.setText("›"); self._connect_navigation_button(self.next, 1); paging_layout.addWidget(self.next); tools.addWidget(paging, 0, Qt.AlignVCenter)
         tools.addSpacing(16); self.tool_group = QButtonGroup(self); self.tool_group.setExclusive(True)
-        self.pan_tool = tool(bar, sprite_icon("pan", size=24), "平移画布（H）\n滚轮缩放，双击适应", checkable=True)
-        self.select_tool = tool(bar, sprite_icon("select", size=24), "选择、移动和缩放标注框（V）", checkable=True)
-        self.box_tool = tool(bar, sprite_icon("box", size=24), "绘制矩形标注框（R）", checkable=True)
-        self.polygon_tool = tool(bar, asset_icon("polygon-tool-icon-v2.png", size=24, glyph_scale=0.78), "绘制多边形标注（P）", checkable=True)
-        for control, mode in ((self.pan_tool, "pan"), (self.select_tool, "select"), (self.box_tool, "box"), (self.polygon_tool, "polygon")):
+        self.pan_tool = tool(bar, sprite_icon("pan", size=24), "平移画布（H）\n未选中的框上或空白处拖动可平移\n单击框选中后，拖动框或控制点可编辑；双击空白处复位", checkable=True)
+        self.box_tool = tool(bar, sprite_icon("box", size=24), "绘制矩形标注框（R）\n空白处拖动画框；单击已有框选中后可编辑\n未选中框上拖动可平移；Ctrl+拖动可画重叠框", checkable=True)
+        self.polygon_tool = tool(bar, asset_icon("polygon-tool-icon-v2.png", size=24, glyph_scale=0.78), "绘制多边形标注（P）\n单击已有标注选中后可编辑；未选中框上拖动可平移\nCtrl+单击可在已有标注上添加顶点", checkable=True)
+        for control, mode in ((self.pan_tool, "pan"), (self.box_tool, "box"), (self.polygon_tool, "polygon")):
             self.tool_group.addButton(control); control.toggled.connect(lambda checked=False, value=mode: self.canvas.set_tool(value) if checked else None); tools.addWidget(control)
         tools.addSpacing(8); undo = tool(bar, sprite_icon("undo"), "撤销（Ctrl+Z）"); undo.clicked.connect(self.undo); tools.addWidget(undo)
         redo = tool(bar, sprite_icon("redo"), "重做（Ctrl+Shift+Z）"); redo.clicked.connect(self.redo); tools.addWidget(redo)
@@ -47,7 +63,7 @@ class ReviewPage(QWidget):
         self.issue_filter = FlatComboBox(); self.issue_filter.addItem("全部待审核", "all"); self.issue_filter.addItem("风险队列", "risk"); self.issue_filter.addItem("低置信度", "low_confidence"); self.issue_filter.addItem("空标注", "empty"); self.issue_filter.addItem("已跳过", "skipped"); self.issue_filter.setToolTip("风险队列包含全部问题项，按风险降序；跳过的图片暂不参与训练。"); self.issue_filter.currentIndexChanged.connect(self._on_issue_filter_changed); review_actions.addWidget(self.issue_filter)
         shortcut_menu = QMenu(self)
         shortcut_menu.setStyleSheet("QMenu {background:#FFFFFF;border:1px solid #E3E5E9;border-radius:12px;padding:6px;} QMenu::item {padding:7px 16px;border-radius:7px;color:#2E3138;} QMenu::item:selected {background:#EAF3FF;color:#0A74FF;} QMenu::item:disabled {color:#737780;font-weight:700;} QMenu::separator {height:1px;background:#ECEEF2;margin:5px 8px;}")
-        for caption in ("画布工具", "H  平移画布", "V  选择、移动和缩放", "R  矩形标注", "P  多边形标注"):
+        for caption in ("画布工具", "H  平移画布", "R  矩形标注", "P  多边形标注"):
             action = shortcut_menu.addAction(caption); action.setEnabled(caption != "画布工具")
         shortcut_menu.addSeparator()
         for caption in ("审核与文件", "← / →  上一张 / 下一张", "Ctrl+Z / Ctrl+Shift+Z  撤销 / 重做", "Delete  删除", "Ctrl+S  保存", "L  标注清单", "A / S  通过 / 跳过并下一张"):
@@ -89,7 +105,6 @@ class ReviewPage(QWidget):
         QShortcut(QKeySequence("Left"), self, activated=lambda: self.move(-1))
         QShortcut(QKeySequence("Right"), self, activated=lambda: self.move(1))
         QShortcut(QKeySequence("H"), self, activated=lambda: self.pan_tool.setChecked(True))
-        QShortcut(QKeySequence("V"), self, activated=lambda: self.select_tool.setChecked(True))
         QShortcut(QKeySequence("R"), self, activated=lambda: self.box_tool.setChecked(True))
         QShortcut(QKeySequence("P"), self, activated=lambda: self.polygon_tool.setChecked(True))
         QShortcut(QKeySequence("L"), self, activated=self.toggle_annotation_drawer)
@@ -195,9 +210,21 @@ class ReviewPage(QWidget):
             row = QWidget(); row_layout = QHBoxLayout(row); row_layout.setContentsMargins(0, 0, 0, 0); row_layout.setSpacing(6)
             shape_type = "多边形" if shape.get("type") == "polygon" else "矩形"
             provenance = ImageCanvas.provenance_text(shape)
-            item = QToolButton(); item.setObjectName("annotationRow"); item.setCheckable(True); item.setChecked(index == self.canvas.selected_index); item.setToolButtonStyle(Qt.ToolButtonTextOnly); item.setText(f"{display_name}   #{index + 1}  ·  {shape_type}\n{provenance}   ·   {width} × {height}"); item.setFixedHeight(54)
+            item = QToolButton(); item.setObjectName("annotationRow"); item.setCheckable(True); item.setChecked(index == self.canvas.selected_index); item.setFixedHeight(58)
+            item.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            item_layout = QVBoxLayout(item); item_layout.setContentsMargins(12, 5, 10, 5); item_layout.setSpacing(1)
+            title_row = QHBoxLayout(); title_row.setContentsMargins(0, 0, 0, 0); title_row.setSpacing(8)
+            title = _ElidedLabel(display_name, item); title.setObjectName("annotationRowTitle"); title.setStyleSheet("font-weight:600;color:#2E3138;")
+            number = QLabel(f"#{index + 1} · {shape_type}", item); number.setObjectName("annotationRowNumber"); number.setAlignment(Qt.AlignRight | Qt.AlignVCenter); number.setAttribute(Qt.WA_TransparentForMouseEvents)
+            title_row.addWidget(title, 1); title_row.addWidget(number, 0); item_layout.addLayout(title_row)
+            detail_row = QHBoxLayout(); detail_row.setContentsMargins(0, 0, 0, 0); detail_row.setSpacing(8)
+            source = _ElidedLabel(provenance, item); source.setObjectName("annotationRowSource"); source.setStyleSheet("color:#747A85;")
+            dimensions = QLabel(f"{width} × {height}", item); dimensions.setObjectName("annotationRowDimensions"); dimensions.setAlignment(Qt.AlignRight | Qt.AlignVCenter); dimensions.setAttribute(Qt.WA_TransparentForMouseEvents); dimensions.setStyleSheet("color:#747A85;")
+            detail_row.addWidget(source, 1); detail_row.addWidget(dimensions, 0); item_layout.addLayout(detail_row)
             color = self.canvas.color_for_label(name).name(); item.setStyleSheet(f"QToolButton {{background:#FFFFFF; border:1px solid #E7E9ED; border-left:4px solid {color}; border-radius:10px; text-align:left; padding:7px 10px; color:#2E3138;}} QToolButton:hover {{background:#F6F9FE; border-color:#CFE1FF; border-left:4px solid {color};}} QToolButton:checked {{background:#EAF3FF; border-color:#0A74FF; border-left:4px solid {color}; font-weight:700;}}")
-            item.setToolTip("定位并选中此标注框"); item.clicked.connect(lambda checked=False, target=index: self._select_annotation_from_list(target)); row_layout.addWidget(item, 1)
+            item.setToolTip(f"{display_name} · #{index + 1} · {shape_type}\n{provenance} · {width} × {height}\n点击定位并选中此标注框")
+            item.setAccessibleName(f"{display_name}，第 {index + 1} 个{shape_type}，{provenance}，{width} × {height}")
+            item.clicked.connect(lambda checked=False, target=index: self._select_annotation_from_list(target)); row_layout.addWidget(item, 1)
             visible = QToolButton(); visible.setObjectName("visibilityCheck"); visible.setCheckable(True); visible.setFixedSize(18, 18); visible.setChecked(index not in self.canvas.hidden_indices); visible.setText("✓" if visible.isChecked() else ""); visible.setToolTip("在画布中显示此标注"); visible.toggled.connect(lambda checked, target=index, control=visible: self._toggle_annotation_visibility(control, target, checked)); row_layout.addWidget(visible, 0, Qt.AlignVCenter)
             self.drawer_rows_layout.addWidget(row); shown += 1
         if not shown:
@@ -222,7 +249,6 @@ class ReviewPage(QWidget):
         if name in self._filter_checks and not self._filter_checks[name].isChecked():
             self._filter_checks[name].setChecked(True)
         hidden = set(self.canvas.hidden_indices); hidden.discard(index); self.canvas.set_hidden_indices(hidden)
-        self.select_tool.setChecked(True)
         self.canvas.focus_shape(index)
         self._refresh_annotation_drawer()
 
@@ -754,8 +780,8 @@ class ReviewPage(QWidget):
         self._drawing_category = name
         self.canvas.set_default_label(name)
         display_name = self._category_display_name(name)
-        self.box_tool.setToolTip(f"绘制矩形标注框（R）\n当前类别：{display_name}；新框将沿用此类别")
-        self.polygon_tool.setToolTip(f"绘制多边形标注（P）\n当前类别：{display_name}；新框将沿用此类别")
+        self.box_tool.setToolTip(f"绘制矩形标注框（R）\n当前类别：{display_name}；新框将沿用此类别\n空白处拖动画框；单击已有框选中后可编辑\n未选中框上拖动可平移；Ctrl+拖动可画重叠框")
+        self.polygon_tool.setToolTip(f"绘制多边形标注（P）\n当前类别：{display_name}；新框将沿用此类别\n单击已有标注选中后可编辑；未选中框上拖动可平移\nCtrl+单击可在标注上添加顶点")
 
     def _selection_changed(self, index: int):
         if 0 <= index < len(self.canvas.shapes):
@@ -851,8 +877,8 @@ class ReviewPage(QWidget):
         self._current_dirty = False
         self._drawing_category = None
         self.canvas.set_default_label("object")
-        self.box_tool.setToolTip("绘制矩形标注框（R）")
-        self.polygon_tool.setToolTip("绘制多边形标注（P）")
+        self.box_tool.setToolTip("绘制矩形标注框（R）\n空白处拖动画框；单击已有框选中后可编辑\n未选中框上拖动可平移；Ctrl+拖动可画重叠框")
+        self.polygon_tool.setToolTip("绘制多边形标注（P）\n单击已有标注选中后可编辑；未选中框上拖动可平移\nCtrl+单击可在标注上添加顶点")
         for item in self._thumbnail_buttons.values():
             item.setParent(None); item.deleteLater()
         self._thumbnail_buttons = {}
@@ -906,7 +932,7 @@ class ReviewPage(QWidget):
         self.window.status_message("已重做上一步修改" if self.canvas.redo() else "没有可重做的修改")
 
     def delete_selected(self):
-        self.window.status_message("已删除选中标注，正在自动保存…" if self.canvas.delete_selected() else "请先用选择工具选中标注框")
+        self.window.status_message("已删除选中标注，正在自动保存…" if self.canvas.delete_selected() else "请先单击标注框将其选中")
 
     def save(self):
         changed = self._save_current(silent=True)

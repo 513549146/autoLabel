@@ -36,6 +36,9 @@ class ImageCanvas(QWidget):
         self._drag_index = -1
         self._drag_mode = None
         self._resize_handle = None
+        self._drag_canvas_start = None
+        self._pan_click_index = -1
+        self._pan_dragged = False
         self._draft_start = None
         self._draft_end = None
         self._polygon_draft: list[list[int]] = []
@@ -121,6 +124,7 @@ class ImageCanvas(QWidget):
         self._drag_point = self._draft_start = self._draft_end = None
         self._polygon_draft = []; self._polygon_hover = None
         self._drag_shape = None; self._drag_index = -1; self._drag_mode = self._resize_handle = None
+        self._drag_canvas_start = None; self._pan_click_index = -1; self._pan_dragged = False
         self.setCursor(Qt.OpenHandCursor if name == "pan" else Qt.CrossCursor if name in ("box", "polygon") else Qt.ArrowCursor)
         self.update()
 
@@ -277,6 +281,39 @@ class ImageCanvas(QWidget):
             "e": Qt.SizeHorCursor, "w": Qt.SizeHorCursor,
         }
         self.setCursor(cursors.get(handle, Qt.ArrowCursor))
+
+    def _set_hover_cursor(self, point: QPointF):
+        if self.tool == "polygon" and self._polygon_draft:
+            self.setCursor(Qt.CrossCursor)
+        elif self._handle_at(point):
+            self._set_select_cursor(point)
+        else:
+            image_point = self._to_image(point)
+            index = self._shape_index_at(image_point) if image_point else -1
+            if index == self.selected_index and index >= 0:
+                self.setCursor(Qt.ArrowCursor)
+            elif index >= 0 or self.tool == "pan":
+                self.setCursor(Qt.OpenHandCursor)
+            elif self.tool == "select":
+                self.setCursor(Qt.ArrowCursor)
+            else:
+                self.setCursor(Qt.CrossCursor)
+
+    def _begin_pan_drag(self, point: QPointF, click_index: int):
+        self._drag_point = point
+        self._drag_origin = QPointF(self.pan)
+        self._pan_click_index = click_index
+        self._pan_dragged = False
+        self.setCursor(Qt.ClosedHandCursor)
+
+    def _begin_shape_drag(self, index: int, image_point: QPointF, canvas_point: QPointF, handle=None):
+        self._drag_point = image_point
+        self._drag_origin = None
+        self._drag_canvas_start = canvas_point
+        self._drag_index = index
+        self._drag_shape = self._copy_shapes([self.shapes[index]])[0]
+        self._drag_mode = "vertex" if handle and handle.startswith("vertex:") else "resize" if handle else "move"
+        self._resize_handle = handle
 
     def _set_selected(self, index: int):
         if self.selected_index != index:
@@ -473,11 +510,7 @@ class ImageCanvas(QWidget):
         self.setFocus()
         point = event.position()
         image_point = self._to_image(point)
-        if self.tool == "pan":
-            self._drag_point = point; self._drag_origin = QPointF(self.pan); self.setCursor(Qt.ClosedHandCursor)
-        elif self.tool == "box" and image_point:
-            self._draft_start = self._draft_end = image_point
-        elif self.tool == "polygon" and image_point:
+        if self.tool == "polygon" and image_point and self._polygon_draft:
             if len(self._polygon_draft) >= 3:
                 first = QPointF(self._polygon_draft[0][0], self._polygon_draft[0][1])
                 _, scale = self._geometry()
@@ -487,31 +520,40 @@ class ImageCanvas(QWidget):
                     event.accept(); return
             self._polygon_draft.append([int(round(image_point.x())), int(round(image_point.y()))])
             self._polygon_hover = image_point
-        elif self.tool == "select":
-            handle = self._handle_at(point)
+        else:
+            force_draw = self.tool in ("box", "polygon") and bool(event.modifiers() & Qt.ControlModifier)
+            handle = None if force_draw else self._handle_at(point)
             if handle and image_point and self.selected_index >= 0:
-                self._drag_point = image_point
-                self._drag_index = self.selected_index
-                self._drag_shape = self._copy_shapes([self.shapes[self.selected_index]])[0]
-                self._drag_mode = "vertex" if handle.startswith("vertex:") else "resize"; self._resize_handle = handle
+                self._begin_shape_drag(self.selected_index, image_point, point, handle)
+                self._set_hover_cursor(point)
             else:
-                index = self._shape_index_at(image_point) if image_point else -1
-                self._set_selected(index)
+                index = self._shape_index_at(image_point) if image_point and not force_draw else -1
                 if index >= 0 and image_point:
-                    self._drag_point = image_point; self._drag_index = index
-                    self._drag_shape = self._copy_shapes([self.shapes[index]])[0]
-                    self._drag_mode = "move"
+                    if index == self.selected_index:
+                        self._begin_shape_drag(index, image_point, point)
+                        self._set_hover_cursor(point)
+                    else:
+                        self._begin_pan_drag(point, index)
+                elif self.tool == "pan":
+                    self._begin_pan_drag(point, -1)
+                elif self.tool == "box" and image_point:
+                    self._draft_start = self._draft_end = image_point
+                elif self.tool == "polygon" and image_point:
+                    self._polygon_draft.append([int(round(image_point.x())), int(round(image_point.y()))])
+                    self._polygon_hover = image_point
+                elif self.tool == "select":
+                    self._set_selected(-1)
         event.accept()
 
     def mouseMoveEvent(self, event):
         point = event.position()
-        if self.tool == "pan" and self._drag_point is not None:
-            self.pan = self._drag_origin + (point - self._drag_point); self.update()
-        elif self.tool == "box" and self._draft_start:
-            self._draft_end = self._to_image(point) or self._draft_end; self.update()
-        elif self.tool == "polygon" and self._polygon_draft:
-            self._polygon_hover = self._to_image(point); self.update()
-        elif self.tool == "select" and self._drag_point and self._drag_shape and self._drag_index >= 0:
+        if self._drag_point is not None and self._drag_shape is None and self._drag_origin is not None:
+            if self._pan_dragged or (point - self._drag_point).manhattanLength() >= 3:
+                self._pan_dragged = True
+                self.pan = self._drag_origin + (point - self._drag_point); self.update()
+        elif self._drag_point is not None and self._drag_shape is not None and self._drag_index >= 0:
+            if self._drag_canvas_start is not None and (point - self._drag_canvas_start).manhattanLength() < 3:
+                return
             current = self._to_image_clamped(point) if self._drag_mode in ("resize", "vertex") else self._to_image(point)
             if current:
                 # Keep scores only for untouched model predictions; reviewers
@@ -541,15 +583,35 @@ class ImageCanvas(QWidget):
                     else:
                         self.shapes[self._drag_index]["bbox"] = [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
                 self.update()
-        elif self.tool == "select":
-            self._set_select_cursor(point)
+        elif self.tool == "box" and self._draft_start:
+            self._draft_end = self._to_image(point) or self._draft_end; self.update()
+        elif self.tool == "polygon" and self._polygon_draft:
+            self._polygon_hover = self._to_image(point); self.update()
+        else:
+            self._set_hover_cursor(point)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
             return super().mouseReleaseEvent(event)
-        if self.tool == "pan":
-            self._drag_point = self._drag_origin = None; self.setCursor(Qt.OpenHandCursor)
+        if self._drag_shape is not None and self._drag_index >= 0:
+            before = self._copy_shapes(self.shapes)
+            before[self._drag_index] = self._drag_shape
+            self._drag_point = self._drag_shape = self._drag_canvas_start = None
+            self._drag_index = -1; self._drag_mode = self._resize_handle = None
+            self._commit(before)
+            self._set_hover_cursor(event.position())
+        elif self._drag_point is not None and self._drag_origin is not None:
+            delta = event.position() - self._drag_point
+            if not self._pan_dragged and delta.manhattanLength() >= 3:
+                self._pan_dragged = True
+                self.pan = self._drag_origin + delta; self.update()
+            if not self._pan_dragged:
+                self._set_selected(self._pan_click_index)
+            self._drag_point = self._drag_origin = None
+            self._pan_click_index = -1
+            self._pan_dragged = False
+            self._set_hover_cursor(event.position())
         elif self.tool == "box" and self._draft_start and self._draft_end:
             x1, y1 = self._draft_start.x(), self._draft_start.y(); x2, y2 = self._draft_end.x(), self._draft_end.y()
             self._draft_start = self._draft_end = None
@@ -558,12 +620,7 @@ class ImageCanvas(QWidget):
                 self.shapes.append({"name": self.default_label, "origin": "manual", "bbox": [int(min(x1, x2)), int(min(y1, y2)), int(max(x1, x2)), int(max(y1, y2))]})
                 self._set_selected(len(self.shapes) - 1); self._commit(before); self.box_created.emit(self.selected_index)
             self.update()
-        elif self.tool == "select" and self._drag_shape and self._drag_index >= 0:
-            before = self._copy_shapes(self.shapes)
-            before[self._drag_index] = self._drag_shape
-            self._drag_point = self._drag_shape = None
-            self._drag_index = -1; self._drag_mode = self._resize_handle = None
-            self._commit(before)
+            self._set_hover_cursor(event.position())
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
@@ -578,9 +635,14 @@ class ImageCanvas(QWidget):
         self.update(); event.accept()
 
     def mouseDoubleClickEvent(self, event):
-        if self.tool == "polygon" and event.button() == Qt.LeftButton:
+        if self.tool == "polygon" and event.button() == Qt.LeftButton and self._polygon_draft:
             self._finish_polygon_draft()
             event.accept(); return
         if event.button() == Qt.LeftButton:
+            image_point = self._to_image(event.position())
+            index = self._shape_index_at(image_point) if image_point else -1
+            if index >= 0:
+                self._set_selected(index)
+                event.accept(); return
             self.zoom = 1.0; self.pan = QPointF(); self.update(); event.accept(); return
         super().mouseDoubleClickEvent(event)
