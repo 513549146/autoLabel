@@ -20,11 +20,18 @@ class ImagePrediction:
     source: str = ""
     model_version: str = ""
     risk_flags: tuple[str, ...] = ()
+    sources: tuple[str, ...] = ()
+    source_scores: tuple[tuple[str, float], ...] = ()
 
     def as_annotation(self) -> dict:
         annotation = {"name": self.label, "bbox": list(self.bbox)}
         if self.score is not None:
             annotation["score"] = float(self.score)
+        annotation["sources"] = list(self.sources or (self.source,)) if self.source or self.sources else []
+        if self.source_scores:
+            annotation["source_scores"] = [[source, score] for source, score in self.source_scores]
+        if self.risk_flags:
+            annotation["risk_flags"] = list(self.risk_flags)
         return annotation
 
 
@@ -61,6 +68,8 @@ def normalize_annotations(
                 score=float(score) if score is not None else None,
                 source=provider_id,
                 model_version=model_version,
+                sources=(provider_id,),
+                source_scores=((provider_id, float(score)),) if score is not None else (),
             )
         )
     return PredictionBundle(provider_id, model_version, tuple(predictions))

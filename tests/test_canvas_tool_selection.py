@@ -1,4 +1,4 @@
-"""矩形绘制、重叠框选中与画布平移的交互回归。"""
+"""Existing boxes stay selectable while drawing or panning."""
 
 from __future__ import annotations
 
@@ -83,21 +83,11 @@ class CanvasToolSelectionTests(unittest.TestCase):
         QTest.mouseMove(self.canvas, self.point(35, 35))
         self.assertEqual(self.canvas.cursor().shape(), Qt.CrossCursor)
         self.drag(self.point(35, 35), self.point(45, 45))
-        self.assertEqual(self.canvas.selected_index, 1)
+        self.assertEqual(self.canvas.selected_index, -1)
         self.assertEqual(len(self.canvas.shapes), 2)
         self.assertEqual(self.canvas.shapes[0]["bbox"], [20, 20, 60, 60])
         self.assert_bbox_close(self.canvas.shapes[1]["bbox"], [35, 35, 45, 45])
         self.assertEqual(self.canvas.pan, QPointF())
-
-        # 新框建好后仍能选中外框，并只修改外框。
-        overlap = self.point(38, 38)
-        QTest.mouseClick(self.canvas, Qt.LeftButton, pos=overlap)
-        QTest.mouseClick(self.canvas, Qt.LeftButton, pos=overlap)
-        self.assertEqual(self.canvas.selected_index, 0)
-        self.canvas.set_tool("pan")
-        self.drag(self.point(25, 25), self.point(30, 30))
-        self.assert_bbox_close(self.canvas.shapes[0]["bbox"], [25, 25, 65, 65])
-        self.assert_bbox_close(self.canvas.shapes[1]["bbox"], [35, 35, 45, 45])
 
     def test_pan_tool_resizes_selected_box_at_handle(self):
         self.canvas.set_tool("pan")
@@ -110,20 +100,19 @@ class CanvasToolSelectionTests(unittest.TestCase):
         self.assert_bbox_close(self.canvas.shapes[0]["bbox"], [20, 20, 70, 75])
         self.assertEqual(self.canvas.pan, QPointF())
 
-    def test_box_tool_clicks_existing_box_and_drags_to_create_another(self):
+    def test_box_tool_clicks_and_moves_selected_box(self):
         self.canvas.set_tool("box")
         QTest.mouseClick(self.canvas, Qt.LeftButton, pos=self.point(35, 35))
         self.assertEqual(self.canvas.selected_index, 0)
         self.assertEqual(self.canvas.shapes[0]["score"], 0.8)
         self.assertEqual(len(self.canvas.shapes), 1)
         QTest.mouseMove(self.canvas, self.point(35, 35))
-        self.assertEqual(self.canvas.cursor().shape(), Qt.CrossCursor)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.ArrowCursor)
 
         self.drag(self.point(35, 35), self.point(40, 40))
-        self.assertEqual(len(self.canvas.shapes), 2)
-        self.assertEqual(self.canvas.shapes[0]["bbox"], [20, 20, 60, 60])
-        self.assertEqual(self.canvas.shapes[0]["score"], 0.8)
-        self.assert_bbox_close(self.canvas.shapes[1]["bbox"], [35, 35, 40, 40])
+        self.assertEqual(len(self.canvas.shapes), 1)
+        self.assert_bbox_close(self.canvas.shapes[0]["bbox"], [25, 25, 65, 65])
+        self.assertNotIn("score", self.canvas.shapes[0])
         self.assertEqual(self.canvas.pan, QPointF())
         self.assertTrue(self.canvas.undo())
         self.assertEqual(len(self.canvas.shapes), 1)
@@ -139,30 +128,39 @@ class CanvasToolSelectionTests(unittest.TestCase):
         self.assertEqual(len(self.canvas.shapes), 3)
         self.assert_bbox_close(self.canvas.shapes[2]["bbox"], [30, 30, 50, 50])
 
-    def test_box_tool_cycles_overlapping_shapes_on_repeated_clicks(self):
-        self.canvas.shapes.append({"name": "inside", "bbox": [30, 30, 50, 50]})
+    def test_new_box_can_immediately_contain_another_box_near_its_handle(self):
+        self.canvas.shapes = []
         self.canvas.set_tool("box")
-        overlap = self.point(35, 35)
-        QTest.mouseClick(self.canvas, Qt.LeftButton, pos=overlap)
-        self.assertEqual(self.canvas.selected_index, 1)
-        QTest.mouseClick(self.canvas, Qt.LeftButton, pos=overlap)
-        self.assertEqual(self.canvas.selected_index, 0)
-        QTest.mouseClick(self.canvas, Qt.LeftButton, pos=overlap)
-        self.assertEqual(self.canvas.selected_index, 1)
-        QTest.mouseClick(self.canvas, Qt.LeftButton, pos=self.point(25, 25))
-        self.assertEqual(self.canvas.selected_index, 0)
+        self.drag(self.point(20, 20), self.point(40, 40))
+        self.assertEqual(self.canvas.selected_index, -1)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.CrossCursor)
+        self.drag(self.point(21, 21), self.point(30, 30))
+        self.assertEqual(len(self.canvas.shapes), 2)
+        self.assertEqual(self.canvas.selected_index, -1)
+        self.assert_bbox_close(self.canvas.shapes[0]["bbox"], [20, 20, 40, 40])
+        self.assert_bbox_close(self.canvas.shapes[1]["bbox"], [21, 21, 30, 30])
         self.assertEqual(self.canvas.pan, QPointF())
 
-    def test_box_tool_resizes_selected_box_without_switching_tools(self):
-        self.canvas.set_tool("box")
-        QTest.mouseClick(self.canvas, Qt.LeftButton, pos=self.point(35, 35))
+        overlap = self.point(25, 25)
+        QTest.mouseClick(self.canvas, Qt.LeftButton, pos=overlap)
+        self.assertEqual(self.canvas.selected_index, 1)
+        QTest.mouseClick(self.canvas, Qt.LeftButton, pos=overlap)
+        self.assertEqual(self.canvas.selected_index, 0)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.ArrowCursor)
+        self.drag(self.point(35, 35), self.point(40, 40))
+        self.assert_bbox_close(self.canvas.shapes[0]["bbox"], [25, 25, 45, 45])
+        self.assert_bbox_close(self.canvas.shapes[1]["bbox"], [21, 21, 30, 30])
         handle = self.canvas._visible_handle_positions(self.canvas._selected_canvas_rect())["se"]
         start = QPoint(round(handle.x()), round(handle.y()))
-        self.drag(start, self.point(70, 75))
-        self.assertEqual(len(self.canvas.shapes), 1)
-        self.assert_bbox_close(self.canvas.shapes[0]["bbox"], [20, 20, 70, 75])
-        self.assertTrue(self.canvas.undo())
-        self.assertEqual(self.canvas.shapes[0]["bbox"], [20, 20, 60, 60])
+        QTest.mouseMove(self.canvas, start)
+        self.assertEqual(self.canvas.cursor().shape(), Qt.SizeFDiagCursor)
+        self.drag(start, self.point(50, 55))
+        self.assert_bbox_close(self.canvas.shapes[0]["bbox"], [25, 25, 50, 55])
+        self.assert_bbox_close(self.canvas.shapes[1]["bbox"], [21, 21, 30, 30])
+        self.canvas.clear_selection()
+        self.assertEqual(self.canvas.cursor().shape(), Qt.CrossCursor)
+        self.drag(self.point(30, 30), self.point(36, 36))
+        self.assertEqual(len(self.canvas.shapes), 3)
 
     def test_polygon_tool_selects_existing_box_before_starting_draft(self):
         self.canvas.set_tool("polygon")

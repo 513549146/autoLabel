@@ -176,8 +176,8 @@ class WorkflowPage(QWidget):
         option_layout.addWidget(label("快速标注选项", "section"))
         option_layout.addWidget(label("召回补扫", "muted"))
         self.recovery_policy = FlatComboBox()
-        self.recovery_policy.addItem("空标注自动补扫（推荐）", RecoveryPolicy.EMPTY_ONLY.value)
-        self.recovery_policy.addItem("每张图片双模型补扫", RecoveryPolicy.ALL_IMAGES.value)
+        self.recovery_policy.addItem("每张图片双模型补扫（高召回推荐）", RecoveryPolicy.ALL_IMAGES.value)
+        self.recovery_policy.addItem("仅空标注时补扫", RecoveryPolicy.EMPTY_ONLY.value)
         self.recovery_policy.currentIndexChanged.connect(self._draft_changed)
         option_layout.addWidget(self.recovery_policy)
         layout.addWidget(self.quick_options)
@@ -323,7 +323,7 @@ class WorkflowPage(QWidget):
         self.project_state.applied_template_id = self.active_template_id
         self.project_state.applied_graph = graph
         settings = QuickAnnotationSettings.load(self.window.project)
-        policy = (RecoveryPolicy(self.recovery_policy.currentData() or RecoveryPolicy.EMPTY_ONLY.value)
+        policy = (RecoveryPolicy(self.recovery_policy.currentData() or RecoveryPolicy.ALL_IMAGES.value)
                   if "recovery_model" in graph.nodes else RecoveryPolicy.OFF)
         QuickAnnotationSettings.save(self.window.project, replace(settings, recovery_policy=policy))
         self._save_timer.stop()

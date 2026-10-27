@@ -11,13 +11,13 @@ from .image_io import _working_directory
 
 
 class TrainingCancelled(Exception):
-    """用户请求停止训练时抛出，供上层区分取消和失败。"""
+    """用户主动停止训练时抛出，供上层与训练失败区分。"""
 
 
 def train_yolo_dataset(
     data_yaml, base_model, epochs, runs_dir, on_progress=None, on_stage=None, on_batch=None, should_stop=None
 ):
-    """执行 YOLO 训练，返回训练目录与最佳权重路径。"""
+    """执行 Ultralytics 训练，返回本次运行目录和最佳权重路径。"""
     if not os.path.isfile(data_yaml):
         raise FileNotFoundError("请先导出训练集（未找到 data.yaml）")
     try:
@@ -64,7 +64,9 @@ def train_yolo_dataset(
     model = YOLO(base_model)
     check_stop()
     stage("正在检查数据集并扫描图片与标签；首次运行可能较久")
-    # Windows 打包版启动工作进程较慢；小数据集少开进程，大数据集再增加并行度。
+    # On Windows, too many frozen workers spend more time restarting the large
+    # application process than loading a small dataset. Keep parallel loading,
+    # and scale it up only when there are enough images to benefit from it.
     train_workers = None
     if os.name == "nt":
         train_workers = min(4 if train_images >= 512 else 2, max(1, (os.cpu_count() or 2) // 2))
@@ -159,8 +161,8 @@ def train_yolo_dataset(
         }
         if train_workers is not None:
             train_options["workers"] = train_workers
-        # Ultralytics 的 AMP 检查按裸文件名寻找 yolo26n.pt；临时切换目录，
-        # 直接使用打包资源，避免重复复制或联网下载。
+        # Ultralytics' GPU AMP check loads "yolo26n.pt" by bare filename.
+        # Resolve it from the frozen bundle without copying or downloading it.
         if os.path.isfile(amp_reference):
             with _working_directory(config.BUNDLE_DIR):
                 model.train(**train_options)

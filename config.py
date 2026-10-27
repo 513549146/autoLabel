@@ -32,9 +32,9 @@ GD15_DIR = os.path.join(WEIGHTS_DIR, "grounding-dino-base")
 YOLOE_WEIGHTS = os.path.join(WEIGHTS_DIR, "yoloe-11l-seg.pt")
 YOLO_WEIGHTS = os.path.join(WEIGHTS_DIR, "yolo_best.pt")  # 微调后 YOLO 权重，训练后放在此处
 
-# YOLO 推理后处理参数
-YOLO_IOU = 0.5       # NMS 的 IoU 阈值，越低越激进合并重叠框（默认 0.7）
-YOLO_MAX_DET = 300   # 每张图最大检测框数
+# YOLO 推理后处理参数。保守抑制重叠框，避免密集目标被模型内部 NMS 提前删除。
+YOLO_IOU = 0.8
+YOLO_MAX_DET = 1000
 
 # 微调训练数据量阈值：训练集图片数低于此值时会提醒用户（避免过拟合）
 MIN_TRAIN_IMAGES = 50
@@ -49,6 +49,12 @@ IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 # 检测阈值
 BOX_THRESHOLD = 0.25
 TEXT_THRESHOLD = 0.25
+
+# High-recall pre-annotation retains uncertain proposals for human review.
+HIGH_RECALL_THRESHOLD = 0.10
+HIGH_RECALL_TILE_MIN_DIMENSION = 1600
+HIGH_RECALL_TILE_SIZE = 960
+HIGH_RECALL_TILE_OVERLAP = 0.20
 
 # Review triage.  Existing/imported annotations with no score are not treated
 # as low-confidence predictions.

@@ -7,7 +7,6 @@ from pathlib import Path
 
 from PIL import Image
 
-import config
 import core
 from project import ProjectStore
 
@@ -112,20 +111,77 @@ class RecoveryPredictionOperation:
 
 
 class CandidateFusionOperation:
-    """Class-aware NMS keeps the highest-confidence proposal from overlapping models."""
+    """Retain the union of proposals and merge only near-identical same-class boxes."""
 
     def execute(self, bundles: tuple[PredictionBundle | None, ...]) -> tuple[ImagePrediction, ...]:
         candidates = [prediction for bundle in bundles if bundle for prediction in bundle.predictions]
-        candidates.sort(key=lambda item: item.score if item.score is not None else -1.0, reverse=True)
-        accepted: list[ImagePrediction] = []
+        # Raw scores from heterogeneous models are not calibrated against one another.
+        # Geometry and class decide duplication; scores remain only review hints.
+        groups: list[list[ImagePrediction]] = []
         for candidate in candidates:
-            if any(
-                candidate.label == selected.label and _iou(candidate.bbox, selected.bbox) >= config.YOLO_IOU
-                for selected in accepted
-            ):
-                continue
-            accepted.append(candidate)
+            group = next((group for group in groups if
+                          candidate.label == group[0].label and
+                          all(_iou(candidate.bbox, member.bbox) >= 0.85 for member in group)), None)
+            if group is None:
+                groups.append([candidate])
+            else:
+                group.append(candidate)
+        accepted = []
+        for group in groups:
+            sources = tuple(dict.fromkeys(source for item in group
+                                          for source in (item.sources or (item.source,)) if source))
+            flags = set(flag for item in group for flag in item.risk_flags)
+            bbox = (min(item.bbox[0] for item in group), min(item.bbox[1] for item in group),
+                    max(item.bbox[2] for item in group), max(item.bbox[3] for item in group))
+            scores = [item.score for item in group if item.score is not None]
+            source_scores = {}
+            for item in group:
+                for source, score in item.source_scores or (((item.source, item.score),) if item.score is not None and item.source else ()):
+                    source_scores[source] = max(source_scores.get(source, float("-inf")), float(score))
+            accepted.append(replace(group[0], bbox=bbox, score=max(scores) if scores else None,
+                                    sources=sources, source_scores=tuple(source_scores.items()),
+                                    risk_flags=tuple(sorted(flags))))
         return tuple(accepted)
+
+
+class CandidateClassAlignmentOperation:
+    """Canonicalize known labels without dropping unfamiliar model phrases."""
+
+    def execute(self, bundles, category_names):
+        canonical = {name.strip().casefold(): name.strip() for name in category_names if name.strip()}
+        aligned = []
+        for bundle in bundles:
+            if bundle is None:
+                continue
+            proposals = []
+            for proposal in bundle.predictions:
+                label = proposal.label.strip().strip(" .")
+                matched = canonical.get(label.casefold())
+                flags = set(proposal.risk_flags)
+                if canonical and not matched:
+                    flags.add("unknown_label")
+                proposals.append(replace(proposal, label=matched or label or "object",
+                                         risk_flags=tuple(sorted(flags))))
+            aligned.append(replace(bundle, predictions=tuple(proposals)))
+        return tuple(aligned)
+
+
+class CandidateReviewTriageOperation:
+    """Mark proposals found by only one model or only on image tiles."""
+
+    def execute(self, predictions, bundles):
+        expected_models = {bundle.provider_id for bundle in bundles}
+        result = []
+        for prediction in predictions:
+            sources = prediction.sources or ((prediction.source,) if prediction.source else ())
+            models = {source.split("/", 1)[0] for source in sources}
+            flags = set(prediction.risk_flags)
+            if len(expected_models) > 1 and len(models) == 1:
+                flags.add("single_model")
+            if sources and all(source.endswith("/tile") for source in sources):
+                flags.add("tile_only")
+            result.append(replace(prediction, risk_flags=tuple(sorted(flags))))
+        return tuple(result)
 
 
 class CandidateBoundsOperation:
@@ -155,17 +211,35 @@ class AnnotationPersistenceOperation:
         request = context.request
         image_path = os.path.join(request.images_dir, filename)
         xml_path = os.path.join(request.annotations_dir, Path(filename).stem + ".xml")
+        previous_xml = Path(xml_path).read_bytes() if os.path.isfile(xml_path) else None
         if os.path.isfile(xml_path):
             ImagePreannotationService.snapshot_annotation(
                 context.project, filename, image_path, xml_path, "重跑前结果", "+".join(providers), request.config.prompt,
                 deduplicate=True,
             )
         annotations = [prediction.as_annotation() for prediction in predictions]
-        core.save_as_voc_xml(annotations, image_path, request.annotations_dir)
-        risk, rules = core.annotation_risk(annotations, image_path)
-        ImagePreannotationService.snapshot_annotation(
-            context.project, filename, image_path, xml_path, "快速预标注", "+".join(providers), request.config.prompt
-        )
+        try:
+            core.save_as_voc_xml(annotations, image_path, request.annotations_dir)
+            risk, rules = core.annotation_risk(annotations, image_path)
+            ImagePreannotationService.snapshot_annotation(
+                context.project, filename, image_path, xml_path, "快速预标注", "+".join(providers), request.config.prompt
+            )
+        except Exception:
+            if previous_xml is None:
+                if os.path.exists(xml_path):
+                    os.remove(xml_path)
+            else:
+                restore_path = xml_path + ".restore"
+                try:
+                    Path(restore_path).write_bytes(previous_xml)
+                    os.replace(restore_path, xml_path)
+                finally:
+                    if os.path.exists(restore_path):
+                        os.remove(restore_path)
+                previous_annotations = core.load_voc_xml(xml_path)
+                old_risk, old_rules = core.annotation_risk(previous_annotations, image_path)
+                context.project.upsert_quality(filename, old_risk, old_rules)
+            raise
         return risk, tuple(sorted(rules))
 
 

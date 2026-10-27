@@ -1,7 +1,4 @@
-"""图片审核页：组装画布、检查器与审核状态流转。
-
-清单、缩略图、长按翻页分别在同目录模块中；三个 Mixin 只依赖此页初始化的状态。
-"""
+"""图片审核页：组合画布、标注清单、缩略图与审核状态。"""
 
 from __future__ import annotations
 
@@ -17,7 +14,7 @@ from project import QUALITY_RULES_VERSION
 
 
 class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin, QWidget):
-    """审核页主控制器；对外仍保留原有方法和 Qt 信号。"""
+    """审核页主控制器；画布和项目状态由此页统一协调。"""
 
     quality_index_finished = Signal(int, str, object)
 
@@ -34,15 +31,13 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._connect_shortcuts()
 
     def _initialize_review_state(self, window):
-        """集中初始化状态，便于区分审核数据、缩略图缓存与质量索引。"""
+        """初始化审核队列、缩略图缓存和质量索引的状态。"""
         self.window = window
         self.files: list[str] = []
         self.index = 0
+        self._risk_cache = {}
+        self._risk_project_root = ""
         self._spot_check_files = None
-        self._current_dirty = False
-        self._drawing_category: str | None = None
-
-        # 缩略图只缓存当前视窗附近的按钮和已解码图标。
         self._thumbnail_buttons = {}
         self._thumbnail_signature = ()
         self._thumbnail_generation = 0
@@ -53,46 +48,46 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._thumbnail_render_pending = set()
         self._thumbnail_risk_queue = []
         self._thumbnail_risk_pending = set()
-
-        # 风险索引与当前文件绑定，扫描结果使用 token 避免覆盖新项目。
-        self._risk_cache = {}
-        self._risk_project_root = ""
         self._quality_filename = ""
+        self._current_dirty = False
+        self._drawing_category: str | None = None
         self._quality_scan_token = 0
         self._quality_scan_thread = None
         self._quality_known_files: set[str] = set()
         self._quality_index_error = ""
 
     def _create_timers(self):
-        """创建延迟保存、翻页与缩略图任务使用的计时器。"""
+        """创建自动保存、翻页和后台缩略图任务的计时器。"""
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.timeout.connect(self._autosave_current)
         self._notes_timer = QTimer(self)
         self._notes_timer.setSingleShot(True)
         self._notes_timer.timeout.connect(self._save_note)
-
         self._nav_hold_direction = 0
         self._nav_hold_timer = QTimer(self)
         self._nav_hold_timer.setSingleShot(True)
         self._nav_hold_timer.timeout.connect(self._start_hold_navigation)
         self._nav_repeat_timer = QTimer(self)
         self._nav_repeat_timer.timeout.connect(self._repeat_navigation)
-
-        for name, callback in (
-            ("_thumbnail_scroll_timer", self._refresh_thumbnails_for_scroll),
-            ("_thumbnail_render_timer", self._process_thumbnail_render),
-            ("_thumbnail_risk_timer", self._process_thumbnail_risk),
-            ("_quality_timer", self._flush_quality_hint),
-            ("_prefetch_timer", self._prefetch_adjacent_images),
-        ):
-            timer = QTimer(self)
-            timer.setSingleShot(True)
-            timer.timeout.connect(callback)
-            setattr(self, name, timer)
+        self._thumbnail_scroll_timer = QTimer(self)
+        self._thumbnail_scroll_timer.setSingleShot(True)
+        self._thumbnail_scroll_timer.timeout.connect(self._refresh_thumbnails_for_scroll)
+        self._thumbnail_render_timer = QTimer(self)
+        self._thumbnail_render_timer.setSingleShot(True)
+        self._thumbnail_render_timer.timeout.connect(self._process_thumbnail_render)
+        self._thumbnail_risk_timer = QTimer(self)
+        self._thumbnail_risk_timer.setSingleShot(True)
+        self._thumbnail_risk_timer.timeout.connect(self._process_thumbnail_risk)
+        self._quality_timer = QTimer(self)
+        self._quality_timer.setSingleShot(True)
+        self._quality_timer.timeout.connect(self._flush_quality_hint)
+        self._prefetch_timer = QTimer(self)
+        self._prefetch_timer.setSingleShot(True)
+        self._prefetch_timer.timeout.connect(self._prefetch_adjacent_images)
 
     def _build_toolbar(self, root):
-        """构建页码、画布工具、快捷键入口和队列筛选。"""
+        """构建分页、绘制工具和审核队列筛选。"""
         bar = card()
         bar_layout = QVBoxLayout(bar)
         bar_layout.setContentsMargins(14, 8, 14, 8)
@@ -133,7 +128,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self.box_tool = tool(
             bar,
             sprite_icon("box", size=24),
-            "绘制矩形标注框（R）\n在图片任意位置拖动可画框，已有框内也能直接画\n单击选框，重叠处连续单击切换；平移请按 H",
+            "绘制矩形标注框（R）\n画完即可在框内继续画；单击框进入编辑状态\n选中后可移动、缩放；重叠处连续单击切换；Esc 取消选中",
             checkable=True,
         )
         self.polygon_tool = tool(
@@ -173,7 +168,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         shortcut_menu.setStyleSheet(
             "QMenu {background:#FFFFFF;border:1px solid #E3E5E9;border-radius:12px;padding:6px;} QMenu::item {padding:7px 16px;border-radius:7px;color:#2E3138;} QMenu::item:selected {background:#EAF3FF;color:#0A74FF;} QMenu::item:disabled {color:#737780;font-weight:700;} QMenu::separator {height:1px;background:#ECEEF2;margin:5px 8px;}"
         )
-        for caption in ("画布工具", "H  平移画布", "R  矩形标注", "P  多边形标注"):
+        for caption in ("画布工具", "H  平移画布", "R  矩形标注", "P  多边形标注", "Esc  取消选中，继续画框"):
             action = shortcut_menu.addAction(caption)
             action.setEnabled(caption != "画布工具")
         shortcut_menu.addSeparator()
@@ -219,7 +214,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         root.addWidget(bar)
 
     def _build_review_area(self, root):
-        """构建画布与右侧检查器，保持备注和翻页区固定。"""
+        """构建画布、标注清单和右侧检查器。"""
         work = QHBoxLayout()
         work.setSpacing(14)
         self.canvas_card = card()
@@ -320,7 +315,8 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self.quality_hint = label("", "muted")
         self.quality_hint.setWordWrap(True)
         form.addWidget(self.quality_hint)
-        # 备注与翻页按钮放在滚动区外；窗口变矮时也不能相互遮挡。
+        # Keep notes and navigation outside the scrollable controls. Both stay
+        # visible and have a hard boundary even in a short workbench window.
         notes_host = QWidget()
         notes_host.setFixedHeight(121)
         notes_layout = QVBoxLayout(notes_host)
@@ -332,7 +328,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self.notes.setFixedHeight(98)
         self.notes.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         notes_layout.addWidget(self.notes)
-        # 纵向空间不足时，只滚动上方表单。
+        # The top form scrolls independently when vertical room is scarce.
         form_scroll = QScrollArea()
         form_scroll.setWidgetResizable(True)
         form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -367,7 +363,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         root.addLayout(work, 1)
 
     def _build_thumbnail_footer(self, root):
-        """构建缩略图条和底部审核进度细线。"""
+        """构建缩略图窗口与全项目审核进度。"""
         strip = card()
         strip_layout = QVBoxLayout(strip)
         strip_layout.setContentsMargins(10, 8, 10, 7)
@@ -397,12 +393,13 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         root.addLayout(footer)
 
     def _connect_shortcuts(self):
-        """全部控件创建完成后，再绑定快捷键和信号。"""
+        """集中注册快捷键和页面级信号连接。"""
         QShortcut(QKeySequence("Left"), self, activated=lambda: self.move(-1))
         QShortcut(QKeySequence("Right"), self, activated=lambda: self.move(1))
         QShortcut(QKeySequence("H"), self, activated=lambda: self.pan_tool.setChecked(True))
         QShortcut(QKeySequence("R"), self, activated=lambda: self.box_tool.setChecked(True))
         QShortcut(QKeySequence("P"), self, activated=lambda: self.polygon_tool.setChecked(True))
+        QShortcut(QKeySequence("Escape"), self, activated=self.canvas.clear_selection)
         QShortcut(QKeySequence("L"), self, activated=self.toggle_annotation_drawer)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save)
         self.category.currentIndexChanged.connect(lambda _index: self._apply_selected_category())
@@ -428,7 +425,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         return result
 
     def _scan_quality_index(self, token, root, project, filenames):
-        """在线程中核对文件时间戳，只重算缺失或过期的风险记录。"""
+        """Validate file stamps and calculate only missing/stale risks off the UI thread."""
         processed = set()
         error = ""
         try:
@@ -488,11 +485,12 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self.refresh()
 
     def _on_issue_filter_changed(self):
-        # 切换筛选结果前先保存旧图片，再重置页码。
+        # Save the old image before resetting its position in the new result set.
         self._save_current(silent=True)
         self.index = 0
         self._quality_index_error = ""
-        # 切换筛选时顺便检查外部工具对 XML/图片的修改；后台完成索引校验。
+        # A filter switch is also a cheap opportunity to notice XML/image edits
+        # made outside the workbench; validation runs in the background.
         self._quality_known_files.clear()
         self.refresh(save_current=False)
 
@@ -561,6 +559,9 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
             "out_of_bounds": "越界框",
             "duplicate": "疑似重复框",
             "invalid": "标注文件异常",
+            "single_model": "仅单模型发现",
+            "tile_only": "仅切片发现",
+            "unknown_label": "待确认类别",
         }
         result = self._risk_for(filename)
         if result is None:
@@ -693,7 +694,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self.canvas.prefetch(nearby)
 
     def _sync_status_controls(self):
-        """区分当前审核状态与下一步可执行动作。"""
+        """Show the current state separately from the available actions."""
         current = None
         if self.files and self.window.project:
             current = self.window.project.status_for(self.files[self.index])
@@ -741,7 +742,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         return name
 
     def _sync_selected_category_editor(self, selected_name=None):
-        """检查器显示中文名，同时保留英文机器标签。"""
+        """Populate the inspector with configured display names and raw label data."""
         current_name = selected_name if selected_name is not None else self.category.currentData()
         categories = self._available_categories()
         self.category.blockSignals(True)
@@ -754,7 +755,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self.category.setEnabled(index >= 0)
 
     def toggle_category_filters(self):
-        """只收起类别显隐筛选，不隐藏检查器其他部分。"""
+        """Collapse the visibility filters without hiding the rest of the inspector."""
         self.filter_collapsed = not self.filter_collapsed
         self.filter_scroll.setVisible(not self.filter_collapsed)
         self.filter_collapse.set_collapsed(self.filter_collapsed)
@@ -790,7 +791,10 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
             checkbox.setText(f"{display_names.get(name, name)}  ({count})")
 
     def _apply_category_filters(self):
-        self.canvas.set_visible_categories({name for name, item in self._filter_checks.items() if item.isChecked()})
+        visible = {name for name, item in self._filter_checks.items() if item.isChecked()}
+        self.canvas.set_visible_categories(visible)
+        if self._drawing_category and self._drawing_category not in visible:
+            self._set_drawing_category(None)
 
     def _apply_selected_category(self):
         name = str(self.category.currentData() or "").strip()
@@ -807,12 +811,20 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         )
         self._refresh_annotation_drawer()
 
-    def _set_drawing_category(self, name: str):
+    def _set_drawing_category(self, name: str | None):
         self._drawing_category = name
-        self.canvas.set_default_label(name)
+        self.canvas.set_default_label(name or "object")
+        if not name:
+            self.box_tool.setToolTip(
+                "绘制矩形标注框（R）\n画完即可在框内继续画；单击框进入编辑状态\n选中后可移动、缩放；重叠处连续单击切换；Esc 取消选中"
+            )
+            self.polygon_tool.setToolTip(
+                "绘制多边形标注（P）\n单击已有标注选中后可编辑；未选中框上拖动可平移\nCtrl+单击可在标注上添加顶点"
+            )
+            return
         display_name = self._category_display_name(name)
         self.box_tool.setToolTip(
-            f"绘制矩形标注框（R）\n当前类别：{display_name}；新框将沿用此类别\n在图片任意位置拖动可画框，已有框内也能直接画\n单击选框，重叠处连续单击切换；平移请按 H"
+            f"绘制矩形标注框（R）\n当前类别：{display_name}；新框将沿用此类别\n画完即可在框内继续画；单击框进入编辑状态\n选中后可移动、缩放；重叠处连续单击切换；Esc 取消选中"
         )
         self.polygon_tool.setToolTip(
             f"绘制多边形标注（P）\n当前类别：{display_name}；新框将沿用此类别\n单击已有标注选中后可编辑；未选中框上拖动可平移\nCtrl+单击可在标注上添加顶点"
@@ -848,6 +860,15 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
                 confirm_text="知道了",
             )
             return
+        # 类别筛选同样约束新标注；已有标注只隐藏，不会被删除或改名。
+        if hasattr(self, "_filter_checks"):
+            visible = {name for name, item in self._filter_checks.items() if item.isChecked()}
+            records = [record for record in records if record["name"] in visible]
+            if not records:
+                self._autosave_timer.stop()
+                self.canvas.delete_selected()
+                self.window.status_message("请先在类别筛选中勾选至少一个类别")
+                return
         display_to_name = {record["display_name"]: record["name"] for record in records}
         annotation_type = (
             "多边形"
@@ -856,7 +877,8 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         )
         category = self._drawing_category
         if category not in {record["name"] for record in records}:
-            # 画布已创建临时框；类别选择弹窗结束前不能以占位标签自动保存。
+            # The canvas has already committed the provisional shape. Do not
+            # autosave it with the placeholder label while the dialog is open.
             self._autosave_timer.stop()
             value, ok = ios_item_input(
                 self, f"新增{annotation_type}标注", "选择类别：", list(display_to_name), 0, False, "创建"
@@ -867,7 +889,9 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
                 return
             category = display_to_name[value.strip()]
             self._set_drawing_category(category)
-        # 新框已进入画布的撤销栈；类别选择与绘制合并为同一步撤销操作。
+        # The canvas committed the new shape before emitting this signal.
+        # Complete that same undo step instead of adding a second "relabel"
+        # step for every newly drawn box or polygon.
         shape = self.canvas.shapes[index]
         shape["name"] = category
         shape["display_name"] = self._category_display_name(category)
@@ -878,7 +902,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
             if hasattr(self, "_filter_checks")
             else None
         )
-        self._rebuild_category_filters(selected | {category} if selected is not None else None)
+        self._rebuild_category_filters(selected)
         self._refresh_annotation_drawer()
         if self._current_dirty:
             self._autosave_timer.start(650)
@@ -925,14 +949,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._thumbnail_risk_queue = []
         self._thumbnail_risk_pending = set()
         self._current_dirty = False
-        self._drawing_category = None
-        self.canvas.set_default_label("object")
-        self.box_tool.setToolTip(
-            "绘制矩形标注框（R）\n在图片任意位置拖动可画框，已有框内也能直接画\n单击选框，重叠处连续单击切换；平移请按 H"
-        )
-        self.polygon_tool.setToolTip(
-            "绘制多边形标注（P）\n单击已有标注选中后可编辑；未选中框上拖动可平移\nCtrl+单击可在标注上添加顶点"
-        )
+        self._set_drawing_category(None)
         for item in self._thumbnail_buttons.values():
             item.setParent(None)
             item.deleteLater()

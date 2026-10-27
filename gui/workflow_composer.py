@@ -168,10 +168,10 @@ class _WorkflowScene(QGraphicsScene):
     def _edge_path(self, source, target, first, second):
         delta = second.pos() - first.pos()
         path = QPainterPath()
-        if source == "primary_model" and target == "candidate_fusion" and "recovery_model" in self.board.nodes:
+        if source == "primary_model" and target == "tile_scan" and "recovery_model" in self.board.nodes:
             start = first.pos() + QPointF(first.WIDTH / 2, first.HEIGHT)
-            end = second.pos() + QPointF(second.WIDTH / 2, second.HEIGHT)
-            below = max(start.y(), end.y()) + 93
+            end = second.pos() + QPointF(second.WIDTH * 0.76, second.HEIGHT)
+            below = max(start.y(), end.y()) + 36
             path.moveTo(start)
             path.cubicTo(QPointF(start.x(), below), QPointF(end.x(), below), end)
             arrow = [end, end + QPointF(-6, 9), end + QPointF(6, 9)]
@@ -209,6 +209,7 @@ class _WorkflowBoard(QGraphicsView):
         (44, 55), (310, 55), (576, 55),
         (576, 235), (310, 235), (44, 235),
         (44, 415), (310, 415), (576, 415),
+        (576, 595), (310, 595), (44, 595),
     )
 
     def __init__(self, parent=None):

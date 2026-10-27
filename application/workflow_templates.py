@@ -24,22 +24,27 @@ class WorkflowTemplate:
 
 
 QUICK_WORKFLOW = WorkflowTemplate(
-    id="quick", title="快速标注", subtitle="系统通用模型 · 自动补扫 · 人工复核", executable=True,
+    id="quick", title="快速标注", subtitle="全图双模型 · 大图切片 · 候选并集 · 人工复核", executable=True,
     steps=(
         WorkflowStepTemplate("project_images", "项目图片", "导入或已有图片"),
         WorkflowStepTemplate("target_queue", "目标队列", "未标注 / 风险 / 待审核"),
         WorkflowStepTemplate("image_check", "图片检查", "文件可读性校验"),
         WorkflowStepTemplate("primary_model", "主模型检测", "开放词表候选"),
-        WorkflowStepTemplate("recovery_model", "召回补扫", "空标注或全量补扫", optional=True),
-        WorkflowStepTemplate("candidate_fusion", "候选融合", "同类重叠框 NMS"),
+        WorkflowStepTemplate("recovery_model", "召回补扫", "默认每张图运行第二模型", optional=True),
+        WorkflowStepTemplate("tile_scan", "大图切片补扫", "长边 ≥1600px 时启用模型重叠切片"),
+        WorkflowStepTemplate("class_alignment", "类别对齐", "映射项目类别，保留未知类别"),
+        WorkflowStepTemplate("candidate_fusion", "候选融合", "保留候选并集，谨慎去重"),
+        WorkflowStepTemplate("review_triage", "分歧标记", "单模型和仅切片候选优先复核"),
         WorkflowStepTemplate("risk_and_version", "风险与版本", "质量规则、XML 快照"),
         WorkflowStepTemplate("human_review", "人工复核", "自动进入审核队列"),
     ),
     edges=(
         ("project_images", "target_queue"), ("target_queue", "image_check"),
         ("image_check", "primary_model"), ("primary_model", "recovery_model"),
-        ("primary_model", "candidate_fusion"), ("recovery_model", "candidate_fusion"),
-        ("candidate_fusion", "risk_and_version"), ("risk_and_version", "human_review"),
+        ("primary_model", "tile_scan"), ("recovery_model", "tile_scan"),
+        ("tile_scan", "class_alignment"), ("class_alignment", "candidate_fusion"),
+        ("candidate_fusion", "review_triage"), ("review_triage", "risk_and_version"),
+        ("risk_and_version", "human_review"),
     ),
 )
 
@@ -71,7 +76,10 @@ CUSTOM_WORKFLOW = WorkflowTemplate(
         WorkflowStepTemplate("image_check", "图片检查", "文件可读性校验"),
         WorkflowStepTemplate("primary_model", "主模型检测", "开放词表候选"),
         WorkflowStepTemplate("recovery_model", "召回补扫", "空标注或全量补扫", optional=True),
-        WorkflowStepTemplate("candidate_fusion", "候选融合", "同类重叠框 NMS"),
+        WorkflowStepTemplate("tile_scan", "大图切片补扫", "长边 ≥1600px 时启用模型重叠切片"),
+        WorkflowStepTemplate("class_alignment", "类别对齐", "映射项目类别，保留未知类别"),
+        WorkflowStepTemplate("candidate_fusion", "候选融合", "保留候选并集，谨慎去重"),
+        WorkflowStepTemplate("review_triage", "分歧标记", "单模型和仅切片候选优先复核"),
         WorkflowStepTemplate("bounds_check", "边界整理", "裁剪越界框，过滤无效框", optional=True),
         WorkflowStepTemplate("risk_and_version", "风险与版本", "质量规则、XML 快照"),
         WorkflowStepTemplate("human_review", "人工复核", "自动进入审核队列"),
@@ -79,8 +87,10 @@ CUSTOM_WORKFLOW = WorkflowTemplate(
     edges=(
         ("project_images", "target_queue"), ("target_queue", "image_check"),
         ("image_check", "primary_model"), ("primary_model", "recovery_model"),
-        ("primary_model", "candidate_fusion"), ("recovery_model", "candidate_fusion"),
-        ("candidate_fusion", "bounds_check"), ("candidate_fusion", "risk_and_version"),
+        ("primary_model", "tile_scan"), ("recovery_model", "tile_scan"),
+        ("tile_scan", "class_alignment"), ("class_alignment", "candidate_fusion"),
+        ("candidate_fusion", "review_triage"),
+        ("review_triage", "bounds_check"), ("review_triage", "risk_and_version"),
         ("bounds_check", "risk_and_version"), ("risk_and_version", "human_review"),
     ),
 )
@@ -224,14 +234,38 @@ class WorkflowComposerSettings:
             for key, graph_data in (raw.get("drafts") or {}).items():
                 if key in registry._templates:
                     graph = cls._decode_graph(key, graph_data)
-                    if graph and not graph.validate(registry.get(key)):
-                        state.drafts[key] = graph
+                    if graph:
+                        upgraded = cls._upgrade_graph(registry.get(key), graph)
+                        if upgraded and not upgraded.validate(registry.get(key)):
+                            state.drafts[key] = upgraded
+                            if upgraded != graph:
+                                state.layouts.pop(key, None)
             graph = cls._decode_graph(state.applied_template_id, raw.get("applied_graph"))
-            if graph and not graph.validate(registry.get(state.applied_template_id)):
-                state.applied_graph = graph
+            if graph:
+                template = registry.get(state.applied_template_id)
+                upgraded = cls._upgrade_graph(template, graph)
+                if upgraded and not upgraded.validate(template):
+                    state.applied_graph = upgraded
+                    if upgraded != graph:
+                        state.layouts.pop(template.id, None)
         except (AttributeError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             return WorkflowProjectState()
         return state
+
+    @staticmethod
+    def _upgrade_graph(template: WorkflowTemplate, graph: WorkflowGraph) -> WorkflowGraph | None:
+        """Insert newly mandatory stages into saved v2 quick/custom diagrams."""
+        added = {"tile_scan", "class_alignment", "review_triage"}
+        if template.id not in ("quick", "custom") or added.issubset(graph.nodes):
+            return graph
+        known = {step.id for step in template.steps}
+        if graph.template_id != template.id or not set(graph.nodes).issubset(known):
+            return None
+        upgraded = WorkflowGraph.preset(template)
+        for step in template.steps:
+            if step.optional and step.id not in graph.nodes:
+                upgraded = upgraded.without_optional(template, step.id)
+        return upgraded
 
     @classmethod
     def _decode_graph(cls, key: str, data) -> WorkflowGraph | None:

@@ -31,7 +31,7 @@ class WorkflowEditorTests(unittest.TestCase):
         without_recovery = preset.without_optional(QUICK_WORKFLOW, "recovery_model")
         self.assertEqual(without_recovery.validate(QUICK_WORKFLOW), ())
         broken = WorkflowGraph("quick", preset.nodes,
-                               tuple(edge for edge in preset.edges if edge != ("primary_model", "candidate_fusion")))
+                               tuple(edge for edge in preset.edges if edge != ("tile_scan", "class_alignment")))
         self.assertIn("必经步骤之间的依赖不能断开", broken.validate(QUICK_WORKFLOW))
         cycle = WorkflowGraph("quick", preset.nodes, (*preset.edges, ("human_review", "primary_model")))
         self.assertIn("流程存在循环依赖", cycle.validate(QUICK_WORKFLOW))
@@ -48,6 +48,28 @@ class WorkflowEditorTests(unittest.TestCase):
         self.assertIn("recovery_model", restored.applied_graph.nodes)
         self.assertNotIn("recovery_model", restored.draft(QUICK_WORKFLOW).nodes)
         self.assertEqual(restored.quick_recovery_policy, "all_images")
+
+    def test_saved_old_graph_is_upgraded_without_reenabling_optional_recovery(self):
+        project = _MetadataProject()
+        old_nodes = ("project_images", "target_queue", "image_check", "primary_model",
+                     "candidate_fusion", "risk_and_version", "human_review")
+        old_edges = (("project_images", "target_queue"), ("target_queue", "image_check"),
+                     ("image_check", "primary_model"), ("primary_model", "candidate_fusion"),
+                     ("candidate_fusion", "risk_and_version"), ("risk_and_version", "human_review"))
+        import json
+        project.set_metadata_value(WorkflowComposerSettings.METADATA_KEY, json.dumps({
+            "applied_template": "quick", "draft_template": "quick",
+            "applied_graph": {"nodes": old_nodes, "edges": old_edges},
+            "drafts": {"quick": {"nodes": old_nodes, "edges": old_edges}},
+            "layouts": {"quick": {"primary_model": [99, 99]}},
+        }))
+        state = WorkflowComposerSettings.load(project)
+        self.assertEqual(state.applied_graph.validate(QUICK_WORKFLOW), ())
+        self.assertNotIn("recovery_model", state.applied_graph.nodes)
+        self.assertIn("tile_scan", state.applied_graph.nodes)
+        self.assertIn("class_alignment", state.applied_graph.nodes)
+        self.assertIn("review_triage", state.applied_graph.nodes)
+        self.assertNotIn("quick", state.layouts)
 
     def test_applied_graph_disables_recovery_in_runner(self):
         project = _MetadataProject()
@@ -106,6 +128,8 @@ class WorkflowEditorTests(unittest.TestCase):
         workflow.predict.execute = Mock(return_value=bundle)
         workflow.recover.execute = Mock(return_value=None)
         workflow.fuse.execute = Mock(return_value=())
+        workflow.triage.execute = Mock(return_value=())
+        workflow.predict_tiles.execute = Mock(return_value=())
         workflow.check_bounds.execute = Mock(return_value=())
         workflow.persist.execute = Mock(return_value=(0, ()))
         workflow.route_review.execute = Mock()

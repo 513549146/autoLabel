@@ -33,9 +33,10 @@ class QuickAnnotationConfig:
     primary_provider_id: str = "yoloe"
     model_weights_path: str = ""
     recovery_provider_id: str = "gd15"
-    recovery_policy: RecoveryPolicy = RecoveryPolicy.EMPTY_ONLY
-    confidence: float = config.BOX_THRESHOLD
+    recovery_policy: RecoveryPolicy = RecoveryPolicy.ALL_IMAGES
+    confidence: float = config.HIGH_RECALL_THRESHOLD
     scope: str = "new"
+    tiled_inference: bool = True
 
     def normalized(self) -> "QuickAnnotationConfig":
         prompt = " . ".join(part.strip() for part in self.prompt.split(".") if part.strip())
@@ -46,7 +47,7 @@ class QuickAnnotationConfig:
         policy = RecoveryPolicy(self.recovery_policy)
         recovery = self.recovery_provider_id if policy != RecoveryPolicy.OFF else ""
         weights_path = str(self.model_weights_path or "") if self.primary_provider_id == "custom_yolo" else ""
-        return replace(self, prompt=prompt, model_weights_path=weights_path, confidence=confidence, scope=scope, recovery_policy=policy, recovery_provider_id=recovery)
+        return replace(self, prompt=prompt, model_weights_path=weights_path, confidence=confidence, scope=scope, recovery_policy=policy, recovery_provider_id=recovery, tiled_inference=bool(self.tiled_inference))
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class QuickImageResult:
 class QuickAnnotationResult:
     completed: tuple[QuickImageResult, ...]
     stopped: bool
+    failed: tuple[str, ...] = ()
 
     @property
     def filenames(self) -> tuple[str, ...]:
@@ -111,9 +113,10 @@ class QuickAnnotationSettings:
                 primary_provider_id=str(raw.get("primary_provider_id", "yoloe")),
                 model_weights_path=str(raw.get("model_weights_path", "")),
                 recovery_provider_id=str(raw.get("recovery_provider_id", "gd15")),
-                recovery_policy=RecoveryPolicy(raw.get("recovery_policy", RecoveryPolicy.EMPTY_ONLY.value)),
-                confidence=float(raw.get("confidence", config.BOX_THRESHOLD)),
+                recovery_policy=RecoveryPolicy(raw.get("recovery_policy", RecoveryPolicy.ALL_IMAGES.value)),
+                confidence=float(raw.get("confidence", config.HIGH_RECALL_THRESHOLD)),
                 scope=str(raw.get("scope", "new")),
+                tiled_inference=bool(raw.get("tiled_inference", True)),
             ).normalized()
         except (TypeError, ValueError, json.JSONDecodeError):
             return QuickAnnotationConfig()
@@ -133,6 +136,7 @@ class QuickAnnotationSettings:
                     "recovery_policy": normalized.recovery_policy.value,
                     "confidence": normalized.confidence,
                     "scope": normalized.scope,
+                    "tiled_inference": normalized.tiled_inference,
                 },
                 ensure_ascii=False,
             ),

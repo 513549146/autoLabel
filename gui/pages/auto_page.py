@@ -155,9 +155,9 @@ class AutoPage(QWidget):
         self.quick_setup = card(); grid = QGridLayout(self.quick_setup); grid.setContentsMargins(22, 20, 22, 20); grid.setHorizontalSpacing(14); grid.setVerticalSpacing(12)
         self.setup_title = label("图像标注配置", "section"); grid.addWidget(self.setup_title, 0, 0, 1, 3); grid.addWidget(label("主检测模型", "muted"), 1, 0); self.model = FlatComboBox(); self._refresh_model_choices(); self.model.setToolTip("项目训练模型会保留历史版本；最近一次成功训练的模型会自动设为默认。") ; grid.addWidget(self.model, 1, 1, 1, 2)
         grid.addWidget(label("类别表", "muted"), 2, 0); self.category_summary = label("打开项目后管理英文标签与中文审核显示名", "muted"); self.category_summary.setWordWrap(True); grid.addWidget(self.category_summary, 2, 1); categories = button("管理类别"); categories.clicked.connect(self._categories); grid.addWidget(categories, 2, 2)
-        grid.addWidget(label("最低置信度", "muted"), 3, 0); confidence_host = QWidget(); confidence_layout = QHBoxLayout(confidence_host); confidence_layout.setContentsMargins(0, 0, 0, 0); confidence_layout.setSpacing(10); self.confidence = QSlider(Qt.Horizontal); self.confidence.setRange(10, 95); self.confidence.setValue(round(config.BOX_THRESHOLD * 100)); self.confidence.setToolTip("低一些可保留更多候选框（适合排查单人漏检）；高一些可过滤不准确的框。"); self.confidence_value = label("", "muted"); self.confidence_value.setFixedWidth(38); self.confidence_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter); confidence_layout.addWidget(self.confidence, 1); confidence_layout.addWidget(self.confidence_value); grid.addWidget(confidence_host, 3, 1, 1, 2); self.confidence.valueChanged.connect(self._update_confidence_label); self._update_confidence_label(self.confidence.value())
+        grid.addWidget(label("候选最低置信度", "muted"), 3, 0); confidence_host = QWidget(); confidence_layout = QHBoxLayout(confidence_host); confidence_layout.setContentsMargins(0, 0, 0, 0); confidence_layout.setSpacing(10); self.confidence = QSlider(Qt.Horizontal); self.confidence.setRange(10, 95); self.confidence.setValue(round(config.HIGH_RECALL_THRESHOLD * 100)); self.confidence.setToolTip("高召回默认 10%；降低阈值会保留更多待人工审核的候选框，不能保证零漏检。"); self.confidence_value = label("", "muted"); self.confidence_value.setFixedWidth(38); self.confidence_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter); confidence_layout.addWidget(self.confidence, 1); confidence_layout.addWidget(self.confidence_value); grid.addWidget(confidence_host, 3, 1, 1, 2); self.confidence.valueChanged.connect(self._update_confidence_label); self._update_confidence_label(self.confidence.value())
         grid.addWidget(label("处理范围", "muted"), 4, 0); self.run_scope = FlatComboBox(); self.run_scope.addItem("仅未标注图片（安全）", "new"); self.run_scope.addItem("风险队列（高风险优先）", "risk"); self.run_scope.addItem("所有待审核图片", "review"); self.run_scope.addItem("全部图片（重新预标注）", "all"); self.run_scope.setToolTip("重新预标注会先保留当前 XML 版本；“全部图片”完成后会将已通过图片退回待审核"); grid.addWidget(self.run_scope, 4, 1, 1, 2); layout.addWidget(self.quick_setup)
-        actions = QHBoxLayout(); self.start = button("开始快速标注", primary=True); self.start.clicked.connect(self._start_labeling); actions.addWidget(self.start); self.stop = button("停止"); self.stop.clicked.connect(self._stop_labeling); self.stop.setEnabled(False); actions.addWidget(self.stop); actions.addWidget(label("完成后会自动融合候选、计算风险并送入人工审核。", "muted")); actions.addStretch(); layout.addLayout(actions)
+        actions = QHBoxLayout(); self.start = button("开始快速标注", primary=True); self.start.clicked.connect(self._start_labeling); actions.addWidget(self.start); self.stop = button("停止"); self.stop.clicked.connect(self._stop_labeling); self.stop.setEnabled(False); actions.addWidget(self.stop); self.strategy_hint = label("默认全图双模型补扫；大图切片补扫。", "muted"); actions.addWidget(self.strategy_hint); actions.addStretch(); layout.addLayout(actions)
         self.progress = QProgressBar(); self.progress.setTextVisible(False); self.progress.setValue(0); layout.addWidget(self.progress)
         log_card = card(); log_layout = QVBoxLayout(log_card); log_layout.setContentsMargins(16, 14, 16, 12); log_layout.setSpacing(8)
         self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setPlaceholderText("运行记录会显示在这里"); self.log.setMinimumHeight(140); self.log.document().setMaximumBlockCount(500); log_layout.addWidget(self.log, 1)
@@ -200,10 +200,18 @@ class AutoPage(QWidget):
             self.project_summary.setText(f"当前工作流：{template.title}。可从项目卡片打开配置。")
             self.workflow_status.setText(status)
             self.workflow_status.setToolTip(status)
+            settings = self._quick_workflow.load_settings(self.window.project)
+            dual = "recovery_model" in enabled and settings.recovery_policy == RecoveryPolicy.ALL_IMAGES
+            tile_text = "；大图切片补扫" if settings.tiled_inference else ""
+            self.strategy_hint.setText(
+                "全图双模型补扫" + tile_text + "；保留单模型候选供审核。" if dual else
+                "当前未启用全图双模型；如需高召回，请在工作流页启用每张图补扫。"
+            )
         else:
             self.project_summary.setText("先从左侧三点菜单新建项目或打开项目。")
             self.workflow_status.setText("")
             self.workflow_status.setToolTip("")
+            self.strategy_hint.setText("默认全图双模型补扫；大图切片补扫。")
 
     def _apply_quick_settings(self, settings):
         model_value = (("custom_yolo", settings.model_weights_path)
@@ -275,6 +283,7 @@ class AutoPage(QWidget):
             prompt=current.prompt, primary_provider_id="custom_yolo", model_weights_path=weights_path,
             recovery_provider_id=current.recovery_provider_id, recovery_policy=current.recovery_policy,
             confidence=current.confidence, scope=current.scope,
+            tiled_inference=current.tiled_inference,
         )
         self._quick_workflow.save_settings(self.window.project, settings)
 
@@ -342,6 +351,7 @@ class AutoPage(QWidget):
             recovery_policy=saved.recovery_policy,
             confidence=self.confidence.value() / 100,
             scope=self.run_scope.currentData() or "new",
+            tiled_inference=saved.tiled_inference,
         )
         request = QuickAnnotationRequest(
             project_root=self.window.project_root,
@@ -399,7 +409,10 @@ class AutoPage(QWidget):
         completed = result.filenames
         self.window.refresh_all()
         risk_note = f"其中 {result.high_risk_count} 张进入高风险审核队列。" if result.high_risk_count else "均已完成风险分流。"
-        self.log.appendPlainText(f"图像标注结束：{len(completed)} 张已写入项目并进入待审核；{risk_note}")
+        failure_note = f"另有 {len(result.failed)} 张失败，原 XML 未被替换；请查看上方 [失败] 日志后重试。" if result.failed else ""
+        self.log.appendPlainText(f"图像标注结束：{len(completed)} 张已写入项目并进入待审核；{risk_note}{failure_note}")
+        if result.failed:
+            self.window.status_message(f"快速标注有 {len(result.failed)} 张失败；请查看运行记录")
         if completed:
             self.window.show_page("review")
 

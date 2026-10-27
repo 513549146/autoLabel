@@ -8,7 +8,7 @@
 2. `gui/qt_workbench.py` 保持稳定导入路径，实际窗口在 `gui/workbench.py` 的 `Workbench`。
 3. `Workbench` 管理项目切换、页面切换和跨页刷新；具体操作在 `gui/pages/`。
 4. 页面把业务请求交给 `application/`。这里负责组织模型推理、预标注版本、审核队列和训练流程。
-5. `core.py` 是旧调用方仍可使用的入口；检测后端仍在这里，XML、数据集和训练细节已按职责移至 `engine/`。
+5. `core.py` 保留原导入入口、检测后端和 VOC 原子写入（含 `_write_voc_tree`）；XML 读取、质量规则、数据集及训练执行按职责放在 `engine/`。
 6. `project.py` 保留旧导入接口；项目清单、应用级最近项目和项目级 SQLite 实现分别在 `storage/`。
 
 ```text
@@ -26,9 +26,10 @@ main.py → Workbench → 各页面
 | `application/contracts.py`、`workflow_contracts.py` | 预标注与工作流的数据契约。 |
 | `application/model_registry.py`、`preannotation.py` | 模型调用、VOC 写入、版本和风险记录。 |
 | `application/quick_workflow.py`、`quick_operations.py` | 快速标注各步骤及其执行顺序。 |
-| `core.py` | 检测后端选择及兼容导出；新调用方优先使用职责明确的 `engine/` 模块。 |
+| `application/high_recall.py`、`recall_evaluation.py` | 双模型候选、切片补扫、候选来源与漏检评估；改动时同时检查 `tests/test_high_recall.py`。 |
+| `core.py` | 检测后端选择、VOC 扩展字段的原子写入及兼容导出；现有调用方可继续从这里导入。 |
 | `engine/image_io.py` | 中文路径图片读取，以及第三方模型权重使用的临时工作目录。 |
-| `engine/annotations.py` | VOC XML 读写、质量规则和审核风险分。 |
+| `engine/annotations.py` | VOC XML 读取、质量规则和审核风险分；XML 写入在 `core.py`。 |
 | `engine/datasets.py`、`training.py` | YOLO 检测数据集导出、训练就绪检查和训练执行。 |
 | `storage/manifest.py` | 可复制的项目清单和项目内路径校验。 |
 | `storage/workspace.py` | 应用级 `workspace.db`，只保存最近项目与上次项目。 |
@@ -44,7 +45,7 @@ main.py → Workbench → 各页面
 ## 一张图片的生命周期
 
 1. `AutoPage` 导入图片并发起 `QuickAnnotationWorkflow`；模型由 `ImageModelRegistry` 加载。
-2. `ImagePreannotationService` 把候选框写入 `annotations/*.xml`，同时记录可恢复版本与风险索引，再把图片送入待审核。
+2. 快速流程可通过双模型和切片补扫收集候选；`ImagePreannotationService` 把候选框、来源和风险标记写入 `annotations/*.xml`，同时记录可恢复版本与风险索引，再把图片送入待审核。
 3. `ReviewPage` 从 XML 加载框到 `ImageCanvas`。画布只负责本次编辑及撤销栈；保存后由页面写回 XML，并更新项目数据库中的质量记录。
 4. “通过”更改项目数据库中的审核状态，不改动原始图片。“已跳过”可稍后移回待审核。
 5. `ExportPage` 只把已通过图片交给 `engine/datasets.py`。导出先写临时目录，完成后才替换正式 `yolo_dataset/`。
@@ -55,7 +56,7 @@ main.py → Workbench → 各页面
 ## 修改时先找哪里
 
 - **新增模型后端：** 先看 `core.Detector`、`core.load_models`，再看 `application/model_registry.py` 的模型选择与结果归一化。
-- **修改 XML 或质量规则：** 看 `engine/annotations.py`，确认旧 XML 仍能读取，并同步检查版本与风险索引。
+- **修改 XML 或质量规则：** 写入看 `core.save_as_voc_xml` 和 `_write_voc_tree`，读取与质量规则看 `engine/annotations.py`；同时检查来源字段、旧 XML、版本与风险索引。
 - **修改审核交互：** 看 `gui/canvas.py` 的鼠标事件，再看 `review_page.py` 的保存和状态流转；清单、缩略图分别在对应模块。
 - **新增项目字段：** 看 `storage/project_store.py` 的 `_initialize` 和迁移逻辑，兼顾已存在的数据库。
 - **改样式或图标：** 改 `gui/theme.py` 或 `gui/icons.py`；不要在业务页面复制整份样式表。

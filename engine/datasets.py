@@ -15,9 +15,9 @@ from .annotations import load_voc_xml
 
 
 def export_yolo_dataset(images_dir, annotations_dir, filenames, output_dir, categories=None, validation_ratio=0.2):
-    """原子地导出训练集；多边形取外接框参与目标检测训练。
+    """把已通过的 VOC 标注原子导出为 YOLO 目标检测数据集。
 
-    先写入临时目录，完成后再替换正式目录，避免留下半成品。
+    多边形使用外接框参与检测训练；先写临时目录，完整生成后才替换正式目录。
     """
     names = [str(filename) for filename in filenames if os.path.isfile(os.path.join(images_dir, filename))]
     if not names:
@@ -121,7 +121,7 @@ def export_yolo_dataset(images_dir, annotations_dir, filenames, output_dir, cate
 
 
 def training_readiness(annotations_dir, filenames, categories=None):
-    """统计已通过图片的类别覆盖率，供训练前检查。"""
+    """统计已通过图片的类别覆盖与空标注，供训练前检查。"""
     class_counts = {str(name): 0 for name in categories or [] if str(name).strip()}
     labels_by_file, empty = {}, []
     for filename in filenames:

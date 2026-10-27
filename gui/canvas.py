@@ -1,4 +1,4 @@
-"""审核画布：负责图片坐标、标注绘制、交互和本次编辑的撤销记录。"""
+"""审核画布：管理图片坐标、标注绘制、选择、缩放与本次编辑的撤销记录。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from .ui import *
 
 
 class ImageCanvas(QWidget):
-    """图片和标注的交互控件；页面通过 Qt 信号接收变更并负责持久化。"""
+    """交互控件；页面通过 Qt 信号接收变更并负责保存到项目。"""
 
     COLORS = ["#8A3FFC", "#FF8A00", "#31C48D", "#FF3B30", "#F2C94C", "#EC4899", "#39A9FF"]
     shapes_changed = Signal(object)
@@ -64,33 +64,41 @@ class ImageCanvas(QWidget):
                 item["score"] = shape["score"]
             if shape.get("origin") in {"manual", "revised", "verified"}:
                 item["origin"] = shape["origin"]
+            for key in ("sources", "risk_flags"):
+                if shape.get(key):
+                    item[key] = list(shape[key])
+            if shape.get("source_scores"):
+                item["source_scores"] = [list(entry[:2]) for entry in shape["source_scores"]]
             copied.append(item)
         return copied
 
     @staticmethod
     def provenance_text(shape):
-        """区分模型原始预测与人工创建、修改或核验的标注。"""
+        """Describe whether a shape is still a model prediction or human work."""
         origin = shape.get("origin")
         labels = {"manual": "人工标注", "revised": "已修订", "verified": "已核验"}
         if origin in labels:
             return labels[origin]
         try:
             if shape.get("score") is not None:
-                return f"模型预测 · 置信度 {float(shape['score']) * 100:.0f}%"
+                sources = " / ".join(shape.get("sources", ()))
+                suffix = f" · {sources}" if sources else ""
+                return f"模型候选 · 原始最高分 {float(shape['score']) * 100:.0f}%{suffix}"
         except (TypeError, ValueError):
             pass
         return "历史标注"
 
     @staticmethod
     def _mark_manually_touched(shape):
-        """人工改动后移除旧模型置信度，并记录人工处理状态。"""
+        """Remove stale model confidence while retaining a clear human-work state."""
         shape.pop("score", None)
+        shape.pop("risk_flags", None)
         if shape.get("origin") != "manual":
             shape["origin"] = "revised"
 
     @classmethod
     def color_for_label(cls, name: str) -> QColor:
-        """按类别名称固定颜色，避免清单顺序改变后颜色跳变。"""
+        """Use a stable category colour instead of the box's list position."""
         value = sum((index + 1) * ord(character) for index, character in enumerate(str(name)))
         return QColor(cls.COLORS[value % len(cls.COLORS)])
 
@@ -119,7 +127,7 @@ class ImageCanvas(QWidget):
         self.update()
 
     def prefetch(self, paths):
-        """空闲时预解码相邻图片，减少审核翻页等待。"""
+        """Decode likely next images only while the reviewer is idle."""
         for path in paths:
             if not path or path in self._pixmap_cache or not os.path.isfile(path):
                 continue
@@ -191,7 +199,7 @@ class ImageCanvas(QWidget):
         return QPointF((point.x() - target.x()) / scale, (point.y() - target.y()) / scale)
 
     def _to_image_clamped(self, point: QPointF):
-        """拖动控制点越过图片边缘时，仍允许把框拉回可见区域。"""
+        """Keep an active resize usable while the pointer crosses an image edge."""
         target, scale = self._geometry()
         if target.isNull():
             return None
@@ -205,6 +213,7 @@ class ImageCanvas(QWidget):
         return QPointF(target.x() + point.x() * scale, target.y() + point.y() * scale)
 
     def _shape_contains_point(self, index: int, point: QPointF):
+        """判断图片坐标是否落在指定可见标注内部。"""
         if self.shapes[index].get("type") == "polygon":
             path = QPainterPath()
             points = self._polygon_points(index)
@@ -216,17 +225,23 @@ class ImageCanvas(QWidget):
             path.closeSubpath()
             return path.contains(point)
         x1, y1, x2, y2 = self.shapes[index]["bbox"]
-        return min(x1, x2) <= point.x() <= max(x1, x2) and min(y1, y2) <= point.y() <= max(y1, y2)
+        # XML 坐标为整数，屏幕坐标换算后可能略越过边界；给描边留 2 像素命中余量。
+        _, scale = self._geometry()
+        margin = 2 / max(scale, 0.01)
+        return (
+            min(x1, x2) - margin <= point.x() <= max(x1, x2) + margin
+            and min(y1, y2) - margin <= point.y() <= max(y1, y2) + margin
+        )
 
     def _shape_index_at(self, point: QPointF):
-        # 悬浮检测只要最上层框，命中后即可停止遍历。
+        # 悬浮检测只需要最上层框，命中后立即返回。
         for index in range(len(self.shapes) - 1, -1, -1):
             if self._is_visible(index) and self._shape_contains_point(index, point):
                 return index
         return -1
 
     def _shape_indices_at(self, point: QPointF):
-        """按显示层级返回光标下的所有标注，供重叠处轮流选中。"""
+        """按显示层级返回点击位置的所有框，供重叠位置轮流选中。"""
         return [
             index
             for index in range(len(self.shapes) - 1, -1, -1)
@@ -234,7 +249,7 @@ class ImageCanvas(QWidget):
         ]
 
     def _select_shape_at_click(self, canvas_point: QPointF):
-        """首次点击选最上层框，同一位置连续点击依次选下层框。"""
+        """第一次点击选上层框；同一位置连续点击依次选下层框。"""
         image_point = self._to_image(canvas_point)
         hits = self._shape_indices_at(image_point) if image_point else []
         if not hits:
@@ -254,7 +269,7 @@ class ImageCanvas(QWidget):
         self._set_selected(index)
 
     def _shape_rect(self, index: int):
-        """返回图片坐标系中按左、上、右、下排列的框。"""
+        """Return an image-space box with stable left/top/right/bottom edges."""
         x1, y1, x2, y2 = self.shapes[index]["bbox"]
         return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
 
@@ -355,19 +370,22 @@ class ImageCanvas(QWidget):
             self.setCursor(Qt.CrossCursor)
         elif self._handle_at(point):
             self._set_select_cursor(point)
-        elif self.tool == "box":
-            # 矩形工具不承担平移；框内外都使用绘制光标。
-            self.setCursor(Qt.CrossCursor if self._to_image(point) else Qt.ArrowCursor)
         else:
             image_point = self._to_image(point)
-            index = self._shape_index_at(image_point) if image_point else -1
-            if index == self.selected_index and index >= 0:
+            selected_under_pointer = (
+                image_point is not None
+                and self.selected_index >= 0
+                and self._is_visible(self.selected_index)
+                and self._shape_contains_point(self.selected_index, image_point)
+            )
+            if selected_under_pointer:
                 self.setCursor(Qt.ArrowCursor)
-            elif index >= 0 or self.tool == "pan":
+            elif self.tool == "pan":
                 self.setCursor(Qt.OpenHandCursor)
             elif self.tool == "select":
                 self.setCursor(Qt.ArrowCursor)
             else:
+                # 未选中的标注不覆盖当前工具的光标；R/P 保持绘制十字。
                 self.setCursor(Qt.CrossCursor)
 
     def _begin_pan_drag(self, point: QPointF, click_index: int):
@@ -378,8 +396,6 @@ class ImageCanvas(QWidget):
         self.setCursor(Qt.ClosedHandCursor)
 
     def _begin_shape_drag(self, index: int, image_point: QPointF, canvas_point: QPointF, handle=None):
-        self._last_click_point = None
-        self._last_click_index = -1
         self._drag_point = image_point
         self._drag_origin = None
         self._drag_canvas_start = canvas_point
@@ -393,6 +409,15 @@ class ImageCanvas(QWidget):
             self.selected_index = index
             self.selection_changed.emit(index)
             self.update()
+
+    def clear_selection(self):
+        """退出框编辑状态，恢复当前工具的默认光标。"""
+        self._last_click_point = None
+        self._last_click_index = -1
+        self._set_selected(-1)
+        self.setCursor(
+            Qt.OpenHandCursor if self.tool == "pan" else Qt.ArrowCursor if self.tool == "select" else Qt.CrossCursor
+        )
 
     def focus_shape(self, index: int):
         """Select one visible box and bring its centre into the canvas viewport."""
@@ -502,6 +527,7 @@ class ImageCanvas(QWidget):
         before = self._copy_shapes(self.shapes)
         for shape in self.shapes:
             shape.pop("score", None)
+            shape.pop("risk_flags", None)
             shape["origin"] = "verified"
         self._commit(before)
         return True
@@ -605,7 +631,6 @@ class ImageCanvas(QWidget):
                     painter.drawEllipse(polygon_point, 4, 4)
 
     def mousePressEvent(self, event):
-        """矩形工具拖动画新框；平移工具仍按点击选中、拖动平移区分手势。"""
         if event.button() == Qt.RightButton and self.tool == "polygon" and self._polygon_draft:
             self._polygon_draft = []
             self._polygon_hover = None
@@ -632,15 +657,20 @@ class ImageCanvas(QWidget):
             self._polygon_draft.append([int(round(image_point.x())), int(round(image_point.y()))])
             self._polygon_hover = image_point
         elif self.tool == "box" and image_point:
-            # 仅已选框的控制点继续缩放；框体内拖动也直接新建嵌套框。
-            handle = None if event.modifiers() & Qt.ControlModifier else self._handle_at(point)
-            if handle and self.selected_index >= 0:
-                self._begin_shape_drag(self.selected_index, image_point, point, handle)
+            selected_handle = self._handle_at(point) if self.selected_index >= 0 else None
+            selected_body = (
+                self.selected_index >= 0
+                and self._is_visible(self.selected_index)
+                and self._shape_contains_point(self.selected_index, image_point)
+            )
+            if selected_handle or selected_body:
+                # 点选后箭头/控制点对应编辑；画完的新框会退出选中，便于立即在内部再画。
+                self._begin_shape_drag(self.selected_index, image_point, point, selected_handle)
                 self._set_hover_cursor(point)
             else:
                 self._draft_start = self._draft_end = image_point
+                self.setCursor(Qt.CrossCursor)
         else:
-            # 多边形工具仍可用 Ctrl 在已有标注上添加顶点。
             force_draw = self.tool == "polygon" and bool(event.modifiers() & Qt.ControlModifier)
             handle = None if force_draw else self._handle_at(point)
             if handle and image_point and self.selected_index >= 0:
@@ -648,12 +678,20 @@ class ImageCanvas(QWidget):
                 self._set_hover_cursor(point)
             else:
                 index = self._shape_index_at(image_point) if image_point and not force_draw else -1
+                if (
+                    image_point
+                    and not force_draw
+                    and self.selected_index >= 0
+                    and self._is_visible(self.selected_index)
+                    and self._shape_contains_point(self.selected_index, image_point)
+                ):
+                    # 已选框被其他框覆盖时，箭头对应的拖动仍作用于这个已选框。
+                    index = self.selected_index
                 if index >= 0 and image_point:
                     if index == self.selected_index:
                         self._begin_shape_drag(index, image_point, point)
                         self._set_hover_cursor(point)
                     else:
-                        # 未选中的框按下后先进入平移：松开且没有拖动才将它选中。
                         self._begin_pan_drag(point, index)
                 elif self.tool == "pan":
                     self._begin_pan_drag(point, -1)
@@ -720,7 +758,6 @@ class ImageCanvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        """结束手势；仅真正修改几何或新增标注时提交撤销记录。"""
         if event.button() != Qt.LeftButton:
             return super().mouseReleaseEvent(event)
         if self._drag_shape is not None and self._drag_index >= 0:
@@ -729,7 +766,11 @@ class ImageCanvas(QWidget):
             self._drag_point = self._drag_shape = self._drag_canvas_start = None
             self._drag_index = -1
             self._drag_mode = self._resize_handle = None
-            self._commit(before)
+            if self.tool == "box" and before == self.shapes:
+                # 只点击已选框仍是一次选框动作，可继续轮流选中重叠框。
+                self._select_shape_at_click(event.position())
+            else:
+                self._commit(before)
             self._set_hover_cursor(event.position())
         elif self._drag_point is not None and self._drag_origin is not None:
             delta = event.position() - self._drag_point
@@ -738,7 +779,6 @@ class ImageCanvas(QWidget):
                 self.pan = self._drag_origin + delta
                 self.update()
             if not self._pan_dragged:
-                # 点击框选中，长按拖动仍然只移动画布。
                 self._set_selected(self._pan_click_index)
             self._drag_point = self._drag_origin = None
             self._pan_click_index = -1
@@ -758,9 +798,12 @@ class ImageCanvas(QWidget):
                         "bbox": [int(min(x1, x2)), int(min(y1, y2)), int(max(x1, x2)), int(max(y1, y2))],
                     }
                 )
-                self._set_selected(len(self.shapes) - 1)
+                new_index = len(self.shapes) - 1
+                self._set_selected(new_index)
                 self._commit(before)
-                self.box_created.emit(self.selected_index)
+                self.box_created.emit(new_index)
+                if self.tool == "box" and self.selected_index == new_index:
+                    self._set_selected(-1)
             elif abs(x2 - x1) < 3 and abs(y2 - y1) < 3:
                 self._select_shape_at_click(event.position())
             self.update()

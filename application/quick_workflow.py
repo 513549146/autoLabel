@@ -8,10 +8,13 @@ from typing import Callable
 from project import ProjectStore
 
 from .model_registry import ImageModelRegistry
+from .high_recall import TiledPredictionOperation
 from .quick_operations import (
     AnnotationPersistenceOperation,
     CandidateBoundsOperation,
     CandidateFusionOperation,
+    CandidateClassAlignmentOperation,
+    CandidateReviewTriageOperation,
     CandidatePredictionOperation,
     ImageReadinessOperation,
     QuickOperationContext,
@@ -48,6 +51,9 @@ class QuickAnnotationWorkflow:
         self.predict = CandidatePredictionOperation()
         self.recover = RecoveryPredictionOperation()
         self.fuse = CandidateFusionOperation()
+        self.align_classes = CandidateClassAlignmentOperation()
+        self.triage = CandidateReviewTriageOperation()
+        self.predict_tiles = TiledPredictionOperation()
         self.check_bounds = CandidateBoundsOperation()
         self.persist = AnnotationPersistenceOperation()
         self.route_review = ReviewRoutingOperation()
@@ -99,6 +105,7 @@ class QuickAnnotationWorkflow:
             optional.append("候选边界整理")
         on_log("图像标注工作流已开始：" + ("、".join(optional) if optional else "仅主模型检测") + "。")
         completed: list[QuickImageResult] = []
+        failed: list[str] = []
         for index, filename in enumerate(filenames):
             if should_stop():
                 on_log("已按请求停止快速标注。")
@@ -108,20 +115,26 @@ class QuickAnnotationWorkflow:
                 self.check_image.execute(image_path)
                 primary = self.predict.execute(context, context.request.config.primary_provider_id, image_path)
                 recovery = self.recover.execute(context, primary, image_path)
-                predictions = self.fuse.execute((primary, recovery))
+                provider_ids = tuple(dict.fromkeys(bundle.provider_id for bundle in (primary, recovery) if bundle))
+                tiles = self.predict_tiles.execute(context, provider_ids, image_path, should_stop)
+                categories = tuple(part.strip() for part in context.request.config.prompt.split(".") if part.strip())
+                bundles = self.align_classes.execute((primary, recovery, *tiles), categories)
+                predictions = self.triage.execute(self.fuse.execute(bundles), bundles)
                 if "bounds_check" in enabled:
                     predictions = self.check_bounds.execute(image_path, predictions)
-                providers = tuple(bundle.provider_id for bundle in (primary, recovery) if bundle is not None)
+                providers = provider_ids
                 risk, rules = self.persist.execute(context, filename, predictions, providers)
                 completed.append(QuickImageResult(filename, len(predictions), risk, rules, providers))
                 risk_note = f" · 风险 {risk}" if risk else " · 风险低"
-                on_log(f"[完成] {filename}：{len(predictions)} 个候选 · {' + '.join(providers)}{risk_note}")
+                tiled_note = f" · 切片补扫 {len(tiles)} 路" if tiles else ""
+                on_log(f"[完成] {filename}：{len(predictions)} 个候选 · {' + '.join(providers)}{tiled_note}{risk_note}")
             except Exception as error:
+                failed.append(filename)
                 on_log(f"[失败] {filename}：{error}")
             if total:
                 on_progress(int((index + 1) * 100 / total))
 
-        result = QuickAnnotationResult(tuple(completed), should_stop())
+        result = QuickAnnotationResult(tuple(completed), should_stop(), tuple(failed))
         # A training completion does not change approval state.  Only the
         # explicit full-image re-labeling mode reopens approved images after a
         # successful new prediction has actually been written.
