@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PIL import Image
 
+import config
 import core
 from project import ProjectStore
 
@@ -112,17 +113,46 @@ class RecoveryPredictionOperation:
 
 
 class CandidateFusionOperation:
-    """Retain the union of proposals and merge only near-identical same-class boxes."""
+    """Merge same-object duplicates while retaining every isolated candidate."""
+
+    @staticmethod
+    def _same_object(first: ImagePrediction, second: ImagePrediction) -> bool:
+        if first.label != second.label:
+            return False
+        a, b = first.bbox, second.bbox
+        aw, ah, bw, bh = a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1]
+        if min(aw, ah, bw, bh) <= 0:
+            return False
+        area_ratio = max(aw * ah, bw * bh) / min(aw * ah, bw * bh)
+        if area_ratio > config.FUSION_MAX_AREA_RATIO:
+            return False
+        center_shift = max(abs(a[0] + a[2] - b[0] - b[2]) / (2 * max(aw, bw)),
+                           abs(a[1] + a[3] - b[1] - b[3]) / (2 * max(ah, bh)))
+        if center_shift > config.FUSION_MAX_CENTER_SHIFT:
+            return False
+        first_sources = set(first.sources or ((first.source,) if first.source else ()))
+        second_sources = set(second.sources or ((second.source,) if second.source else ()))
+        shared_sources = first_sources & second_sources
+        if any("/tile" not in source for source in shared_sources):
+            threshold = config.FUSION_SAME_FULL_IOU
+        elif shared_sources:
+            threshold = config.FUSION_SAME_TILE_IOU
+        else:
+            threshold = config.FUSION_CROSS_STREAM_IOU
+        return _iou(a, b) >= threshold
 
     def execute(self, bundles: tuple[PredictionBundle | None, ...]) -> tuple[ImagePrediction, ...]:
-        candidates = [prediction for bundle in bundles if bundle for prediction in bundle.predictions]
+        candidates = [replace(prediction,
+                              source=prediction.source or bundle.provider_id,
+                              sources=prediction.sources or (prediction.source or bundle.provider_id,))
+                      for bundle in bundles if bundle for prediction in bundle.predictions]
         # Raw scores from heterogeneous models are not calibrated against one another.
-        # Geometry and class decide duplication; scores remain only review hints.
+        # Only pairwise geometry and class decide duplication; score is review context.
         groups: list[list[ImagePrediction]] = []
         for candidate in candidates:
-            group = next((group for group in groups if
-                          candidate.label == group[0].label and
-                          all(_iou(candidate.bbox, member.bbox) >= 0.85 for member in group)), None)
+            matches = [group for group in groups if all(self._same_object(candidate, member) for member in group)]
+            group = max(matches, key=lambda members: min(_iou(candidate.bbox, member.bbox)
+                                                        for member in members), default=None)
             if group is None:
                 groups.append([candidate])
             else:

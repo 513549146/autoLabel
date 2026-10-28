@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
+
 from .ui import *
 
 
@@ -9,10 +13,12 @@ class ImageCanvas(QWidget):
     """交互控件；页面通过 Qt 信号接收变更并负责保存到项目。"""
 
     COLORS = ["#8A3FFC", "#FF8A00", "#31C48D", "#FF3B30", "#F2C94C", "#EC4899", "#39A9FF"]
+    COMPACT_LABEL_THRESHOLD = 18
     shapes_changed = Signal(object)
     selection_changed = Signal(int)
     box_created = Signal(int)
     polygon_created = Signal(int)
+    audit_event = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -29,6 +35,7 @@ class ImageCanvas(QWidget):
         self.zoom = 1.0
         self.pan = QPointF()
         self.selected_index = -1
+        self._hover_index = -1
         self.default_label = "object"
         self.visible_categories: set[str] | None = None
         self.hidden_indices: set[int] = set()
@@ -49,6 +56,9 @@ class ImageCanvas(QWidget):
         self._polygon_hover = None
         self._history: list[list[dict]] = []
         self._redo: list[list[dict]] = []
+        self._history_ops: list[str] = []
+        self._redo_ops: list[str] = []
+        self._pending_add: tuple[str, list[dict]] | None = None
 
     @staticmethod
     def _copy_shapes(shapes):
@@ -81,9 +91,16 @@ class ImageCanvas(QWidget):
             return labels[origin]
         try:
             if shape.get("score") is not None:
-                sources = " / ".join(shape.get("sources", ()))
-                suffix = f" · {sources}" if sources else ""
-                return f"模型候选 · 原始最高分 {float(shape['score']) * 100:.0f}%{suffix}"
+                names = {"yoloe": "YOLOE", "gd15": "Grounding DINO",
+                         "gd_ogc": "Grounding DINO 旧版", "custom_yolo": "YOLO"}
+                raw_sources = [str(value) for value in shape.get("sources", ()) if value]
+                friendly = list(dict.fromkeys(names.get(value.split("/", 1)[0], "其他模型")
+                                               for value in raw_sources))
+                source_text = "、".join(friendly)
+                if raw_sources and any("/tile" in value for value in raw_sources):
+                    source_text += "（含切片）" if any("/tile" not in value for value in raw_sources) else "（切片）"
+                suffix = f" · {source_text}" if source_text else ""
+                return f"模型候选 · 最高分 {float(shape['score']) * 100:.0f}%{suffix}"
         except (TypeError, ValueError):
             pass
         return "历史标注"
@@ -119,11 +136,15 @@ class ImageCanvas(QWidget):
         self.zoom = 1.0
         self.pan = QPointF()
         self.selected_index = -1
+        self._hover_index = -1
         self._last_click_point = None
         self._last_click_index = -1
         self.hidden_indices.clear()
         self._history.clear()
         self._redo.clear()
+        self._history_ops.clear()
+        self._redo_ops.clear()
+        self._pending_add = None
         self.update()
 
     def prefetch(self, paths):
@@ -366,12 +387,17 @@ class ImageCanvas(QWidget):
         self.setCursor(cursors.get(handle, Qt.ArrowCursor))
 
     def _set_hover_cursor(self, point: QPointF):
+        image_point = self._to_image(point)
+        hover_index = self._shape_index_at(image_point) if image_point else -1
+        if hover_index != self._hover_index:
+            self._hover_index = hover_index
+            if len(self.shapes) > self.COMPACT_LABEL_THRESHOLD:
+                self.update()
         if self.tool == "polygon" and self._polygon_draft:
             self.setCursor(Qt.CrossCursor)
         elif self._handle_at(point):
             self._set_select_cursor(point)
         else:
-            image_point = self._to_image(point)
             selected_under_pointer = (
                 image_point is not None
                 and self.selected_index >= 0
@@ -446,15 +472,63 @@ class ImageCanvas(QWidget):
         self.update()
         return True
 
-    def _commit(self, before):
+    @staticmethod
+    def _annotation_digest(shapes):
+        canonical = [{"name": item.get("name", ""), "bbox": item.get("bbox", []),
+                      "type": item.get("type", "box"), "points": item.get("points", [])}
+                     for item in shapes]
+        raw = json.dumps(canonical, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _emit_edit(self, kind, before, operation_id):
+        counts = {"add": "add_count", "delete": "delete_count",
+                  "class_change": "class_change_count", "geometry_change": "geometry_change_count"}
+        field = counts.get(kind)
+        if not field or self._annotation_digest(before) == self._annotation_digest(self.shapes):
+            return
+        self.audit_event.emit({"event_type": "edit_commit", "operation_id": operation_id,
+                               field: 1, "before_digest": self._annotation_digest(before),
+                               "after_digest": self._annotation_digest(self.shapes)})
+
+    def _commit(self, before, kind=None, *, deferred=False):
         if before == self.shapes:
             return
         self._last_click_point = None
         self._last_click_index = -1
         self._history.append(before)
+        operation_id = str(uuid.uuid4())
+        self._history_ops.append(operation_id)
         self._redo.clear()
+        self._redo_ops.clear()
+        self.shapes_changed.emit(self._copy_shapes(self.shapes))
+        if deferred:
+            self._pending_add = operation_id, before
+        elif kind:
+            self._emit_edit(kind, before, operation_id)
+        self.update()
+
+    def finalize_pending_add(self):
+        if not self._pending_add:
+            return False
+        operation_id, before = self._pending_add
+        self._pending_add = None
+        self._emit_edit("add", before, operation_id)
+        return True
+
+    def cancel_pending_add(self):
+        if not self._pending_add:
+            return False
+        operation_id, before = self._pending_add
+        self._pending_add = None
+        if not self._history_ops or self._history_ops[-1] != operation_id:
+            return False
+        self._history.pop()
+        self._history_ops.pop()
+        self.shapes = self._copy_shapes(before)
+        self._set_selected(-1)
         self.shapes_changed.emit(self._copy_shapes(self.shapes))
         self.update()
+        return True
 
     def _finish_polygon_draft(self):
         """Commit the in-progress polygon and immediately leave drawing mode."""
@@ -474,7 +548,7 @@ class ImageCanvas(QWidget):
         self._polygon_draft = []
         self._polygon_hover = None
         self._set_selected(len(self.shapes) - 1)
-        self._commit(before)
+        self._commit(before, "add", deferred=True)
         self.polygon_created.emit(self.selected_index)
         return True
 
@@ -484,16 +558,19 @@ class ImageCanvas(QWidget):
         before = self._copy_shapes(self.shapes)
         self.shapes.pop(self.selected_index)
         self._set_selected(-1)
-        self._commit(before)
+        self._commit(before, "delete")
         return True
 
     def undo(self):
         if not self._history:
             return False
         self._redo.append(self._copy_shapes(self.shapes))
+        operation_id = self._history_ops.pop()
+        self._redo_ops.append(operation_id)
         self.shapes = self._history.pop()
         self._set_selected(-1)
         self.shapes_changed.emit(self._copy_shapes(self.shapes))
+        self.audit_event.emit({"event_type": "undo", "target_operation_id": operation_id})
         self.update()
         return True
 
@@ -501,9 +578,12 @@ class ImageCanvas(QWidget):
         if not self._redo:
             return False
         self._history.append(self._copy_shapes(self.shapes))
+        operation_id = self._redo_ops.pop()
+        self._history_ops.append(operation_id)
         self.shapes = self._redo.pop()
         self._set_selected(-1)
         self.shapes_changed.emit(self._copy_shapes(self.shapes))
+        self.audit_event.emit({"event_type": "redo", "target_operation_id": operation_id})
         self.update()
         return True
 
@@ -518,7 +598,7 @@ class ImageCanvas(QWidget):
             self.shapes[self.selected_index].pop("display_name", None)
         # A model confidence no longer describes a manually reclassified shape.
         self._mark_manually_touched(self.shapes[self.selected_index])
-        self._commit(before)
+        self._commit(before, "class_change")
 
     def mark_all_verified(self):
         """Record the human approval state instead of inventing a 100% score."""
@@ -529,7 +609,7 @@ class ImageCanvas(QWidget):
             shape.pop("score", None)
             shape.pop("risk_flags", None)
             shape["origin"] = "verified"
-        self._commit(before)
+        self._commit(before, "verify")
         return True
 
     def paintEvent(self, _event):
@@ -555,6 +635,7 @@ class ImageCanvas(QWidget):
             )
             self._display_cache_key = cache_key
         painter.drawPixmap(target.topLeft(), self._display_cache)
+        compact_labels = sum(self._is_visible(index) for index in range(len(self.shapes))) > self.COMPACT_LABEL_THRESHOLD
         for index, shape in enumerate(self.shapes):
             if not self._is_visible(index):
                 continue
@@ -594,18 +675,14 @@ class ImageCanvas(QWidget):
                     selected_fill.setAlpha(28)
                     painter.fillRect(rect, selected_fill)
                 painter.drawRect(rect)
-            caption = shape.get("display_name") or shape.get("name", "object")
-            provenance = self.provenance_text(shape)
-            if provenance.startswith("模型预测"):
-                caption += provenance.replace("模型预测 · 置信度 ", "  ")
-            elif provenance != "历史标注":
-                caption += f"  ·  {provenance}"
-            painter.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
-            width = max(46, painter.fontMetrics().horizontalAdvance(caption) + 16)
-            caption_rect = QRectF(rect.x(), max(target.y(), rect.y() - 25), width, 24)
-            painter.fillRect(caption_rect, color)
-            painter.setPen(Qt.white)
-            painter.drawText(caption_rect, Qt.AlignCenter, caption)
+            if not compact_labels or index in {self.selected_index, self._hover_index}:
+                caption = shape.get("display_name") or shape.get("name", "object")
+                painter.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
+                width = max(46, painter.fontMetrics().horizontalAdvance(caption) + 16)
+                caption_rect = QRectF(rect.x(), max(target.y(), rect.y() - 25), width, 24)
+                painter.fillRect(caption_rect, color)
+                painter.setPen(Qt.white)
+                painter.drawText(caption_rect, Qt.AlignCenter, caption)
             if index == self.selected_index and shape.get("type") != "polygon":
                 painter.setBrush(Qt.white)
                 painter.setPen(QPen(color, 2))
@@ -757,6 +834,12 @@ class ImageCanvas(QWidget):
             self._set_hover_cursor(point)
         super().mouseMoveEvent(event)
 
+    def leaveEvent(self, event):
+        if self._hover_index != -1:
+            self._hover_index = -1
+            self.update()
+        super().leaveEvent(event)
+
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
             return super().mouseReleaseEvent(event)
@@ -770,7 +853,7 @@ class ImageCanvas(QWidget):
                 # 只点击已选框仍是一次选框动作，可继续轮流选中重叠框。
                 self._select_shape_at_click(event.position())
             else:
-                self._commit(before)
+                self._commit(before, "geometry_change")
             self._set_hover_cursor(event.position())
         elif self._drag_point is not None and self._drag_origin is not None:
             delta = event.position() - self._drag_point
@@ -800,7 +883,7 @@ class ImageCanvas(QWidget):
                 )
                 new_index = len(self.shapes) - 1
                 self._set_selected(new_index)
-                self._commit(before)
+                self._commit(before, "add", deferred=True)
                 self.box_created.emit(new_index)
                 if self.tool == "box" and self.selected_index == new_index:
                     self._set_selected(-1)

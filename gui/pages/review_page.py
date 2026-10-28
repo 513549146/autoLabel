@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from application.review_metrics import ReviewMetricsRecorder
 from ..ui import *
 from ..canvas import ImageCanvas
 from .review_drawer import ReviewDrawerMixin
@@ -29,6 +30,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._build_review_area(root)
         self._build_thumbnail_footer(root)
         self._connect_shortcuts()
+        QApplication.instance().applicationStateChanged.connect(self._application_state_changed)
 
     def _initialize_review_state(self, window):
         """初始化审核队列、缩略图缓存和质量索引的状态。"""
@@ -55,6 +57,9 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._quality_scan_thread = None
         self._quality_known_files: set[str] = set()
         self._quality_index_error = ""
+        self._metrics = None
+        self._metrics_project = None
+        self._metrics_filter_installed = False
 
     def _create_timers(self):
         """创建自动保存、翻页和后台缩略图任务的计时器。"""
@@ -85,6 +90,9 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._prefetch_timer = QTimer(self)
         self._prefetch_timer.setSingleShot(True)
         self._prefetch_timer.timeout.connect(self._prefetch_adjacent_images)
+        self._metrics_timer = QTimer(self)
+        self._metrics_timer.setInterval(5000)
+        self._metrics_timer.timeout.connect(self._metrics_heartbeat)
 
     def _build_toolbar(self, root):
         """构建分页、绘制工具和审核队列筛选。"""
@@ -222,6 +230,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         canvas_layout.setContentsMargins(10, 10, 10, 10)
         self.canvas = ImageCanvas()
         self.canvas.shapes_changed.connect(self._canvas_changed)
+        self.canvas.audit_event.connect(self._record_canvas_event)
         self.canvas.selection_changed.connect(self._selection_changed)
         self.canvas.box_created.connect(self._new_box_created)
         self.canvas.polygon_created.connect(self._new_box_created)
@@ -639,6 +648,89 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._spot_check_files = None
         self.issue_filter.setEnabled(True)
 
+    def _start_metrics_for(self, filename, xml_path):
+        project = self.window.project
+        if not project or not hasattr(project, "start_review_session"):
+            return
+        if self._metrics_project is not project:
+            self.end_review_metrics("project_switch")
+            self._metrics = ReviewMetricsRecorder(project)
+            self._metrics_project = project
+        try:
+            self._metrics.start(filename, xml_path)
+            if QApplication.instance().applicationState() != Qt.ApplicationActive or (
+                hasattr(self.window, "isMinimized") and self.window.isMinimized()
+            ):
+                self._metrics.pause()
+            if not self._metrics_filter_installed:
+                QApplication.instance().installEventFilter(self)
+                self._metrics_filter_installed = True
+            self._metrics_timer.start()
+        except Exception as error:
+            self.end_review_metrics("interrupted")
+            self.window.status_message(f"审核统计暂不可用：{error}")
+
+    def _metrics_heartbeat(self):
+        if self._metrics and self._metrics.session_id:
+            try:
+                self._metrics.heartbeat()
+            except Exception as error:
+                self.window.status_message(f"审核统计保存失败：{error}")
+
+    def _application_state_changed(self, state):
+        if state != Qt.ApplicationActive and self._metrics:
+            try:
+                self._metrics.pause()
+            except Exception as error:
+                self.window.status_message(f"审核计时暂停失败：{error}")
+
+    def eventFilter(self, watched, event):
+        if not self._metrics or not self._metrics.session_id:
+            return super().eventFilter(watched, event)
+        if watched is self.window and event.type() == QEvent.WindowStateChange:
+            if self.window.isMinimized():
+                try:
+                    self._metrics.pause()
+                except Exception as error:
+                    self.window.status_message(f"审核计时暂停失败：{error}")
+            return super().eventFilter(watched, event)
+        kind = event.type()
+        input_kinds = {QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.Wheel, QEvent.TouchBegin}
+        if kind not in input_kinds and kind != QEvent.MouseMove:
+            return super().eventFilter(watched, event)
+        if kind == QEvent.MouseMove and not event.buttons():
+            return super().eventFilter(watched, event)
+        target = watched
+        while target is not None:
+            if target is self:
+                self._metrics.note_input()
+                break
+            target = target.parent() if hasattr(target, "parent") else None
+        return super().eventFilter(watched, event)
+
+    def _record_canvas_event(self, payload):
+        data = dict(payload)
+        kind = data.pop("event_type")
+        self._record_metric(kind, **data)
+
+    def _record_metric(self, kind, **fields):
+        if self._metrics and self._metrics.session_id:
+            try:
+                self._metrics.record(kind, **fields)
+            except Exception as error:
+                self.window.status_message(f"审核事件保存失败：{error}")
+
+    def end_review_metrics(self, reason="page_leave", outcome="none"):
+        self._metrics_timer.stop()
+        if self._metrics_filter_installed:
+            QApplication.instance().removeEventFilter(self)
+            self._metrics_filter_installed = False
+        if self._metrics and self._metrics.session_id:
+            try:
+                self._metrics.finish(reason, outcome)
+            except Exception as error:
+                self.window.status_message(f"审核会话结算失败：{error}")
+
     def _load(self):
         self._ensure_thumbnail_strip()
         total = len(self.files)
@@ -647,6 +739,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._update_thumbnail_selection()
         self._schedule_thumbnail_fill(100)
         if not total:
+            self.end_review_metrics("navigate")
             self.notes.blockSignals(True)
             self.notes.clear()
             self.notes.blockSignals(False)
@@ -668,6 +761,11 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         for shape in shapes:
             shape["display_name"] = display_names.get(shape.get("name", ""), shape.get("name", ""))
         self.canvas.set_content(image_path, shapes)
+        if self.canvas._pixmap.isNull():
+            self.end_review_metrics("navigate")
+            self.window.status_message(f"图片无法加载，审核计时未开始：{filename}")
+        else:
+            self._start_metrics_for(filename, xml_path)
         self._current_dirty = False
         self.notes.blockSignals(True)
         self.notes.setPlainText(self.window.project.note_for(filename) if self.window.project else "")
@@ -845,6 +943,8 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
     def _update_annotation_state_hint(self, index):
         if 0 <= index < len(self.canvas.shapes):
             self.annotation_state_hint.setText("标注来源：" + ImageCanvas.provenance_text(self.canvas.shapes[index]))
+        elif len(self.canvas.shapes) > ImageCanvas.COMPACT_LABEL_THRESHOLD:
+            self.annotation_state_hint.setText("框较多：悬停查看类别，标注清单可逐项定位")
         else:
             self.annotation_state_hint.setText("")
         self.annotation_state_hint.setVisible(bool(self.annotation_state_hint.text()))
@@ -852,7 +952,8 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
     def _new_box_created(self, index: int):
         records = self.window.project.category_records() if self.window.project else []
         if not records:
-            self.canvas.delete_selected()
+            if not self.canvas.cancel_pending_add():
+                self.canvas.delete_selected()
             ios_alert(
                 self,
                 "请先配置类别",
@@ -866,7 +967,8 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
             records = [record for record in records if record["name"] in visible]
             if not records:
                 self._autosave_timer.stop()
-                self.canvas.delete_selected()
+                if not self.canvas.cancel_pending_add():
+                    self.canvas.delete_selected()
                 self.window.status_message("请先在类别筛选中勾选至少一个类别")
                 return
         display_to_name = {record["display_name"]: record["name"] for record in records}
@@ -884,7 +986,8 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
                 self, f"新增{annotation_type}标注", "选择类别：", list(display_to_name), 0, False, "创建"
             )
             if not ok or not value.strip():
-                self.canvas.delete_selected()
+                if not self.canvas.cancel_pending_add():
+                    self.canvas.delete_selected()
                 self.window.status_message("已取消新增标注")
                 return
             category = display_to_name[value.strip()]
@@ -895,6 +998,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         shape = self.canvas.shapes[index]
         shape["name"] = category
         shape["display_name"] = self._category_display_name(category)
+        self.canvas.finalize_pending_add()
         self.canvas.update()
         self._sync_selected_category_editor(category)
         selected = (
@@ -924,6 +1028,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
 
     def clear_project_context(self):
         """Drop the previous project's canvas before directory paths are replaced."""
+        self.end_review_metrics("project_switch")
         self._autosave_timer.stop()
         self._notes_timer.stop()
         self._thumbnail_scroll_timer.stop()
@@ -992,9 +1097,14 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         filename = self.files[self.index]
         self._risk_cache.pop(filename, None)
         image_path = os.path.join(self.window.images_dir, filename)
-        core.save_as_voc_xml(self.canvas.shapes, image_path, self.window.annotations_dir)
-        self._index_current_quality(filename, self.canvas.shapes)
+        try:
+            core.save_as_voc_xml(self.canvas.shapes, image_path, self.window.annotations_dir)
+            self._index_current_quality(filename, self.canvas.shapes)
+        except Exception as error:
+            self._record_metric("save_failed", details={"error": type(error).__name__})
+            raise
         self._current_dirty = False
+        self._record_metric("save_success", details={"automatic": bool(automatic)})
         self._update_quality_hint(filename)
         if not silent:
             self.window.status_message("标注已自动保存" if automatic else "已保存到项目 annotations 文件夹")
@@ -1054,6 +1164,7 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         )
         shutil.copy2(version["path"], xml_path)
         self._index_current_quality(filename)
+        self._record_metric("restore_version", details={"annotation_version_id": version["id"]})
         self._load()
         self.window.status_message("已恢复所选标注版本")
 
@@ -1072,10 +1183,15 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
         self._save_current(silent=True)
         if status == STATUS_APPROVED and self._spot_check_files is not None and filename in self._spot_check_files:
             self.window.project.mark_spot_checks([filename], "passed")
+            self._record_metric("status_change", details={"status": "spot_check_pass"})
+            self.end_review_metrics("approved", "spot_check_pass")
             self.window.refresh_all()
             self.window.status_message("抽检通过并进入下一张")
             return
         self.window.project.set_status(filename, status)
+        self._record_metric("status_change", details={"status": status})
+        if status in {STATUS_APPROVED, STATUS_SKIPPED}:
+            self.end_review_metrics("approved" if status == STATUS_APPROVED else "skipped", status)
         self.window.refresh_all()
         self.window.status_message(
             "已通过并进入下一张"

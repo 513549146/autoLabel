@@ -24,7 +24,7 @@ class WorkflowTemplate:
 
 
 QUICK_WORKFLOW = WorkflowTemplate(
-    id="quick", title="快速标注", subtitle="全图双模型 · 大图切片 · 候选并集 · 人工复核", executable=True,
+    id="quick", title="快速标注", subtitle="全图双模型 · 大图切片 · 重复框合并 · 人工复核", executable=True,
     steps=(
         WorkflowStepTemplate("project_images", "项目图片", "导入或已有图片"),
         WorkflowStepTemplate("target_queue", "目标队列", "未标注 / 风险 / 待审核"),
@@ -33,7 +33,7 @@ QUICK_WORKFLOW = WorkflowTemplate(
         WorkflowStepTemplate("recovery_model", "召回补扫", "默认每张图运行第二模型", optional=True),
         WorkflowStepTemplate("tile_scan", "大图切片补扫", "长边 ≥1600px 时启用模型重叠切片"),
         WorkflowStepTemplate("class_alignment", "类别对齐", "映射项目类别，保留未知类别"),
-        WorkflowStepTemplate("candidate_fusion", "候选融合", "保留候选并集，谨慎去重"),
+        WorkflowStepTemplate("candidate_fusion", "重复框合并", "仅合并同类、中心和尺寸接近的重叠候选；保留独立框与模型来源"),
         WorkflowStepTemplate("review_triage", "分歧标记", "单模型和仅切片候选优先复核"),
         WorkflowStepTemplate("risk_and_version", "风险与版本", "质量规则、XML 快照"),
         WorkflowStepTemplate("human_review", "人工复核", "自动进入审核队列"),
@@ -78,7 +78,7 @@ CUSTOM_WORKFLOW = WorkflowTemplate(
         WorkflowStepTemplate("recovery_model", "召回补扫", "空标注或全量补扫", optional=True),
         WorkflowStepTemplate("tile_scan", "大图切片补扫", "长边 ≥1600px 时启用模型重叠切片"),
         WorkflowStepTemplate("class_alignment", "类别对齐", "映射项目类别，保留未知类别"),
-        WorkflowStepTemplate("candidate_fusion", "候选融合", "保留候选并集，谨慎去重"),
+        WorkflowStepTemplate("candidate_fusion", "重复框合并", "仅合并同类、中心和尺寸接近的重叠候选；保留独立框与模型来源"),
         WorkflowStepTemplate("review_triage", "分歧标记", "单模型和仅切片候选优先复核"),
         WorkflowStepTemplate("bounds_check", "边界整理", "裁剪越界框，过滤无效框", optional=True),
         WorkflowStepTemplate("risk_and_version", "风险与版本", "质量规则、XML 快照"),

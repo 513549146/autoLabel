@@ -55,6 +55,48 @@ class HighRecallTests(unittest.TestCase):
             PredictionBundle("yoloe", "", (first,)), PredictionBundle("gd15", "", (second,)),
         ))), 2)
 
+    def test_matching_tile_candidates_merge_without_dropping_isolated_objects(self):
+        tiles = PredictionBundle("yoloe", "tiled", (
+            ImagePrediction("person", (10, 10, 110, 110), .24, "yoloe/tile", sources=("yoloe/tile",)),
+            ImagePrediction("person", (18, 12, 118, 112), .20, "yoloe/tile", sources=("yoloe/tile",)),
+            ImagePrediction("person", (150, 10, 250, 110), .17, "yoloe/tile", sources=("yoloe/tile",)),
+        ))
+        result = CandidateFusionOperation().execute((tiles,))
+        self.assertEqual(len(result), 2)
+        truth = {"image": [{"name": "person", "bbox": [10, 10, 110, 110]},
+                           {"name": "person", "bbox": [150, 10, 250, 110]}]}
+        before = evaluate_recall(truth, {"image": tiles.annotations()})
+        after = evaluate_recall(truth, {"image": [item.as_annotation() for item in result]})
+        self.assertEqual(after["overall"]["fn"], before["overall"]["fn"])
+
+    def test_two_full_image_detections_remain_separate_even_when_close(self):
+        primary = PredictionBundle("yoloe", "", (
+            ImagePrediction("person", (0, 0, 100, 100), .3, "yoloe"),
+            ImagePrediction("person", (14, 0, 114, 100), .28, "yoloe"),
+        ))
+        result = CandidateFusionOperation().execute((primary,))
+        self.assertEqual(len(result), 2)
+
+    def test_cross_model_duplicate_merges_but_different_classes_do_not(self):
+        primary = PredictionBundle("yoloe", "", (
+            ImagePrediction("helmet", (20, 20, 120, 120), .3, "yoloe"),
+        ))
+        secondary = PredictionBundle("gd15", "", (
+            ImagePrediction("helmet", (28, 23, 128, 123), .2, "gd15"),
+            ImagePrediction("person", (22, 22, 122, 122), .1, "gd15"),
+        ))
+        result = CandidateFusionOperation().execute((primary, secondary))
+        self.assertEqual(len(result), 2)
+        helmet = next(item for item in result if item.label == "helmet")
+        self.assertEqual(set(helmet.sources), {"yoloe", "gd15"})
+        self.assertEqual(len(helmet.source_scores), 2)
+
+    def test_model_source_name_is_human_readable(self):
+        text = ImageCanvas.provenance_text({"score": .2, "sources": ["gd15/tile"]})
+        self.assertIn("Grounding DINO", text)
+        self.assertIn("切片", text)
+        self.assertNotIn("gd15", text)
+
     def test_windows_cover_edges_and_only_tile_detection_is_flagged(self):
         windows = tile_windows(2000, 1100, 960, .2)
         self.assertIn((1040, 140, 2000, 1100), windows)

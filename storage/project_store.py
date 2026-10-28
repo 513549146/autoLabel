@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
 
 from .constants import (
@@ -142,12 +143,57 @@ class ProjectStore:
                     sampled_at TEXT NOT NULL,
                     completed_at TEXT NOT NULL DEFAULT ''
                 );
+                CREATE TABLE IF NOT EXISTS review_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    filename TEXT NOT NULL,
+                    started_at_utc TEXT NOT NULL,
+                    ended_at_utc TEXT,
+                    last_checkpoint_at_utc TEXT NOT NULL,
+                    last_input_at_utc TEXT NOT NULL,
+                    active_ms INTEGER NOT NULL DEFAULT 0 CHECK (active_ms >= 0),
+                    end_reason TEXT,
+                    outcome TEXT NOT NULL DEFAULT 'none',
+                    opened_xml_sha256 TEXT,
+                    preannotation_version_id INTEGER,
+                    contract_version INTEGER NOT NULL DEFAULT 1,
+                    app_version TEXT NOT NULL DEFAULT '',
+                    code_revision TEXT NOT NULL DEFAULT '',
+                    instance_id TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_review_sessions_filename_started
+                    ON review_sessions(filename, started_at_utc);
+                CREATE INDEX IF NOT EXISTS idx_review_sessions_open
+                    ON review_sessions(last_checkpoint_at_utc) WHERE ended_at_utc IS NULL;
+                CREATE TABLE IF NOT EXISTS review_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    occurred_at_utc TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    operation_id TEXT,
+                    target_operation_id TEXT,
+                    add_count INTEGER NOT NULL DEFAULT 0,
+                    delete_count INTEGER NOT NULL DEFAULT 0,
+                    class_change_count INTEGER NOT NULL DEFAULT 0,
+                    geometry_change_count INTEGER NOT NULL DEFAULT 0,
+                    before_digest TEXT,
+                    after_digest TEXT,
+                    details_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_review_events_session ON review_events(session_id, id);
+                CREATE INDEX IF NOT EXISTS idx_review_events_filename_time ON review_events(filename, occurred_at_utc);
             """)
             category_columns = {row["name"] for row in connection.execute("PRAGMA table_info(categories)")}
             if "display_name" not in category_columns:
                 connection.execute("ALTER TABLE categories ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
             connection.execute("UPDATE categories SET display_name = name WHERE display_name = ''")
-            connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("schema_version", "6"))
+            schema_row = connection.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
+            try:
+                schema_version = int(schema_row["value"]) if schema_row else 0
+            except (TypeError, ValueError):
+                schema_version = 0
+            if schema_version < 7:
+                connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("schema_version", "7"))
             if self.images_dir:
                 connection.execute(
                     "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", ("images_dir", self.images_dir)
@@ -383,6 +429,80 @@ class ProjectStore:
                 "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)",
                 (str(key), str(value)),
             )
+
+    def latest_preannotation_version_id(self, filename):
+        """Return a model-output snapshot, never a rerun-before or restored XML."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, snapshot_path FROM annotation_versions "
+                "WHERE filename = ? AND source IN ('自动预标注', '快速预标注') ORDER BY id DESC",
+                (filename,),
+            ).fetchall()
+        for row in rows:
+            if os.path.isfile(os.path.join(self.project_dir, row["snapshot_path"])):
+                return int(row["id"])
+        return None
+
+    def start_review_session(self, filename, started_at_utc, opened_xml_sha256=None,
+                             preannotation_version_id=None, app_version="", code_revision="", instance_id=""):
+        session_id = str(uuid.uuid4())
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO review_sessions(session_id, filename, started_at_utc, "
+                "last_checkpoint_at_utc, last_input_at_utc, opened_xml_sha256, "
+                "preannotation_version_id, app_version, code_revision, instance_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, filename, started_at_utc, started_at_utc, started_at_utc,
+                 opened_xml_sha256, preannotation_version_id, app_version, code_revision, instance_id),
+            )
+        return session_id
+
+    def checkpoint_review_session(self, session_id, active_ms, checkpoint_at_utc, last_input_at_utc):
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE review_sessions SET active_ms = MAX(active_ms, ?), "
+                "last_checkpoint_at_utc = ?, last_input_at_utc = ? "
+                "WHERE session_id = ? AND ended_at_utc IS NULL",
+                (max(0, int(active_ms)), checkpoint_at_utc, last_input_at_utc, session_id),
+            )
+
+    def finish_review_session(self, session_id, active_ms, ended_at_utc, end_reason, outcome="none"):
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE review_sessions SET active_ms = MAX(active_ms, ?), "
+                "last_checkpoint_at_utc = ?, ended_at_utc = ?, end_reason = ?, outcome = ? "
+                "WHERE session_id = ? AND ended_at_utc IS NULL",
+                (max(0, int(active_ms)), ended_at_utc, ended_at_utc, end_reason, outcome, session_id),
+            )
+
+    def recover_interrupted_review_sessions(self, stale_before_utc, instance_id=""):
+        """Close only stale sessions from another app instance at their last checkpoint."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE review_sessions SET ended_at_utc = last_checkpoint_at_utc, "
+                "end_reason = 'interrupted' WHERE ended_at_utc IS NULL "
+                "AND last_checkpoint_at_utc < ? AND instance_id != ?",
+                (stale_before_utc, instance_id),
+            )
+        return cursor.rowcount
+
+    def record_review_event(self, session_id, filename, occurred_at_utc, event_type, *,
+                            operation_id=None, target_operation_id=None, add_count=0,
+                            delete_count=0, class_change_count=0, geometry_change_count=0,
+                            before_digest=None, after_digest=None, details=None):
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO review_events(session_id, filename, occurred_at_utc, event_type, "
+                "operation_id, target_operation_id, add_count, delete_count, "
+                "class_change_count, geometry_change_count, before_digest, after_digest, details_json) "
+                "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? "
+                "WHERE EXISTS (SELECT 1 FROM review_sessions WHERE session_id = ? AND ended_at_utc IS NULL)",
+                (session_id, filename, occurred_at_utc, event_type, operation_id,
+                 target_operation_id, max(0, int(add_count)), max(0, int(delete_count)),
+                 max(0, int(class_change_count)), max(0, int(geometry_change_count)),
+                 before_digest, after_digest, json.dumps(details or {}, ensure_ascii=False), session_id),
+            )
+        return cursor.lastrowid if cursor.rowcount else None
 
     def record_annotation_version(
         self, filename, snapshot_path, source, model="", prompt="", annotation_count=0, risk_score=0, rules=None

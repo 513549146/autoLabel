@@ -119,7 +119,10 @@ class QuickAnnotationWorkflow:
                 tiles = self.predict_tiles.execute(context, provider_ids, image_path, should_stop)
                 categories = tuple(part.strip() for part in context.request.config.prompt.split(".") if part.strip())
                 bundles = self.align_classes.execute((primary, recovery, *tiles), categories)
-                predictions = self.triage.execute(self.fuse.execute(bundles), bundles)
+                raw_count = sum(len(bundle.predictions) for bundle in bundles)
+                fused = self.fuse.execute(bundles)
+                merged_count = raw_count - len(fused)
+                predictions = self.triage.execute(fused, bundles)
                 if "bounds_check" in enabled:
                     predictions = self.check_bounds.execute(image_path, predictions)
                 providers = provider_ids
@@ -127,7 +130,11 @@ class QuickAnnotationWorkflow:
                 completed.append(QuickImageResult(filename, len(predictions), risk, rules, providers))
                 risk_note = f" · 风险 {risk}" if risk else " · 风险低"
                 tiled_note = f" · 切片补扫 {len(tiles)} 路" if tiles else ""
-                on_log(f"[完成] {filename}：{len(predictions)} 个候选 · {' + '.join(providers)}{tiled_note}{risk_note}")
+                merged_note = f" · 合并重复框 {merged_count} 个" if merged_count else ""
+                provider_names = {"yoloe": "YOLOE", "gd15": "Grounding DINO Base",
+                                  "gd_ogc": "Grounding DINO 旧版", "custom_yolo": "YOLO"}
+                shown_providers = " + ".join(provider_names.get(item, item) for item in providers)
+                on_log(f"[完成] {filename}：{len(predictions)} 个候选 · {shown_providers}{tiled_note}{merged_note}{risk_note}")
             except Exception as error:
                 failed.append(filename)
                 on_log(f"[失败] {filename}：{error}")

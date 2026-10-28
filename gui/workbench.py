@@ -609,6 +609,13 @@ class Workbench(QMainWindow):
     def show_page(self, key: str):
         if self.pages.currentWidget() is self.workflow and key != "workflow":
             self.workflow.flush_draft()
+        if self.pages.currentWidget() is self.review and key != "review":
+            try:
+                self.review.flush_autosave()
+            except Exception as error:
+                self.status_message(f"标注保存失败，已留在审核页：{error}")
+                return
+            self.review.end_review_metrics("page_leave")
         self.pages.setCurrentWidget(self.keys[key])
         self.sidebar.setVisible(key not in {"workflow", "model_manager", "welcome"})
         if key in self.nav:
@@ -633,8 +640,8 @@ class Workbench(QMainWindow):
 
     def open_spot_check_review(self, filenames):
         """Enter the regular canvas with only the sampled approved images queued."""
-        self.review.open_spot_check(filenames)
         self.pages.setCurrentWidget(self.review)
+        self.review.open_spot_check(filenames)
         self.nav["review"].setChecked(True)
 
     def status_message(self, text: str):
@@ -645,6 +652,13 @@ class Workbench(QMainWindow):
         # well as when it was opened, so startup can reliably restore it.
         if self.project_root:
             self.workflow.flush_draft()
+            try:
+                self.review.flush_autosave()
+            except Exception as error:
+                self.status_message(f"标注保存失败，已取消关闭：{error}")
+                event.ignore()
+                return
+            self.review.end_review_metrics("app_close")
             self.workspace.remember_project(self.project_root, self.project_name)
         super().closeEvent(event)
 

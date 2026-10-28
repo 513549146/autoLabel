@@ -56,6 +56,15 @@ HIGH_RECALL_TILE_MIN_DIMENSION = 1600
 HIGH_RECALL_TILE_SIZE = 960
 HIGH_RECALL_TILE_OVERLAP = 0.20
 
+# Candidate fusion merges geometrically consistent duplicates after full-image
+# and tiled inference. Same-stream full-image boxes require near identity so
+# neighbouring real objects are not collapsed by the second model or a tile.
+FUSION_CROSS_STREAM_IOU = 0.75
+FUSION_SAME_TILE_IOU = 0.70
+FUSION_SAME_FULL_IOU = 0.90
+FUSION_MAX_CENTER_SHIFT = 0.16
+FUSION_MAX_AREA_RATIO = 1.60
+
 # Review triage.  Existing/imported annotations with no score are not treated
 # as low-confidence predictions.
 REVIEW_LOW_CONFIDENCE = 0.45
