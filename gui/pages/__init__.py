@@ -5,6 +5,7 @@ from .review_page import ReviewPage
 from .library_page import LibraryPage
 from .export_page import ExportPage
 from .workflow_page import WorkflowPage
+from .model_manager_page import ModelManagerPage
 from .welcome_page import WelcomePage
 
-__all__ = ("AutoPage", "ReviewPage", "LibraryPage", "ExportPage", "WorkflowPage", "WelcomePage")
+__all__ = ("AutoPage", "ReviewPage", "LibraryPage", "ExportPage", "WorkflowPage", "ModelManagerPage", "WelcomePage")

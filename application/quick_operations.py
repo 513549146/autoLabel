@@ -47,9 +47,9 @@ class ValidateQuickTaskOperation:
         primary = context.registry.descriptor(normalized.primary_provider_id)
         if "detect" not in primary.capabilities:
             raise ValueError("所选模型不支持图像检测")
-        if normalized.primary_provider_id == "custom_yolo":
+        if normalized.primary_provider_id == "custom_yolo" or normalized.model_weights_path:
             if not normalized.model_weights_path or not os.path.isfile(normalized.model_weights_path):
-                raise ValueError("项目训练模型不存在，请在自动标注页重新选择一个可用模型")
+                raise ValueError("所选模型权重不存在，请在模型管理页面选择一个可用版本")
         if normalized.recovery_policy != RecoveryPolicy.OFF:
             recovery = context.registry.descriptor(normalized.recovery_provider_id)
             if "open_vocab" not in recovery.capabilities:
@@ -88,7 +88,8 @@ class CandidatePredictionOperation:
     def execute(self, context: QuickOperationContext, provider_id: str, image_path: str) -> PredictionBundle:
         predictor = context.predictors.get(provider_id)
         if predictor is None:
-            weights_path = context.request.config.model_weights_path if provider_id == "custom_yolo" else ""
+            weights_path = (context.request.config.model_weights_path
+                            if provider_id == context.request.config.primary_provider_id else "")
             predictor = context.registry.create(provider_id, weights_path)
             context.predictors[provider_id] = predictor
         return predictor.predict(image_path, context.request.config.prompt, context.request.config.confidence)

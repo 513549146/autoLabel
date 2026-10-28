@@ -30,6 +30,8 @@ def apply_app_style(app: QApplication):
         QMainWindow {{ background: {COLORS['canvas']}; }}
         QFrame#windowbar {{ background: #FFFFFF; border: 0; }}
         QFrame#card {{ background: {COLORS['surface']}; border: 1px solid {COLORS['line']}; border-radius: 16px; }}
+        QFrame#modelRow {{ background:#FAFBFC; border:1px solid #E8EBEF; border-radius:11px; }}
+        QLabel#modelBadge {{ color:#567087; background:#EDF3F8; border-radius:8px; padding:5px 8px; font-size:11px; font-weight:650; }}
         QFrame#sidebar {{ background: {COLORS['surface']}; border-right: 1px solid {COLORS['line']}; }}
         QLabel#title {{ font-size: 21px; font-weight: 700; }}
         QLabel#section {{ font-size: 13px; font-weight: 700; }}
@@ -41,8 +43,11 @@ def apply_app_style(app: QApplication):
         QPushButton#primary:hover {{ background: #2A8AFF; }}
         QPushButton#secondary {{ background: #F1F3F6; color: #2E3138; border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 600; }}
         QPushButton#secondary:hover {{ background: #E7EBF0; }}
+        QPushButton#modelManagerLink {{ background:transparent; border:0; color:{COLORS['blue']}; font-size:13px; font-weight:700; padding:6px 8px; }}
+        QPushButton#modelManagerLink:hover {{ color:#005FCC; text-decoration:underline; }}
         QPushButton#destructive {{ background: #FFF1F0; color: #D92D20; border: 0; border-radius: 9px; padding: 7px 10px; font-weight: 700; }}
         QPushButton#destructive:hover {{ background: #FFE1DE; }}
+        QPushButton#destructive:disabled {{ background:#F1F3F6; color:#AAB2BB; }}
         QToolButton#tool {{ background: transparent; border: 0; border-radius: 10px; padding: 8px; }}
         QToolButton#tool:hover, QToolButton#tool:checked {{ background: {COLORS['blue_soft']}; }}
         QToolButton#shortcutGuide {{ background:#F1F3F6; border:0; border-radius:10px; color:#34373E; font-family:'Segoe UI Symbol', 'Microsoft YaHei UI'; font-size:19px; padding:0; }}

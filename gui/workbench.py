@@ -10,7 +10,7 @@ from xml.etree.ElementTree import ParseError
 
 from .ui import *
 from .canvas import ImageCanvas
-from .pages import AutoPage, ExportPage, LibraryPage, ReviewPage, WelcomePage, WorkflowPage
+from .pages import AutoPage, ExportPage, LibraryPage, ModelManagerPage, ReviewPage, WelcomePage, WorkflowPage
 
 
 class Workbench(QMainWindow):
@@ -117,6 +117,7 @@ class Workbench(QMainWindow):
         layout.addWidget(self.pages, 1)
         self.welcome = WelcomePage(self)
         self.auto = AutoPage(self)
+        self.model_manager = ModelManagerPage(self)
         self.workflow = WorkflowPage(self)
         self.workflow.workflow_changed.connect(self._workflow_changed)
         self.review = ReviewPage(self)
@@ -125,6 +126,7 @@ class Workbench(QMainWindow):
         self.keys = {
             "welcome": self.welcome,
             "auto": self.auto,
+            "model_manager": self.model_manager,
             "workflow": self.workflow,
             "review": self.review,
             "approved": self.library,
@@ -608,7 +610,7 @@ class Workbench(QMainWindow):
         if self.pages.currentWidget() is self.workflow and key != "workflow":
             self.workflow.flush_draft()
         self.pages.setCurrentWidget(self.keys[key])
-        self.sidebar.setVisible(key not in {"workflow", "welcome"})
+        self.sidebar.setVisible(key not in {"workflow", "model_manager", "welcome"})
         if key in self.nav:
             self.nav[key].setChecked(True)
         if key == "review":
@@ -616,6 +618,8 @@ class Workbench(QMainWindow):
             self.review.refresh()
         if key == "approved":
             self.library.refresh()
+        if key == "model_manager":
+            self.model_manager.refresh()
 
     def open_workflow(self):
         if self.project:

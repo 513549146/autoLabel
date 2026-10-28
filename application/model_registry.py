@@ -33,7 +33,7 @@ class CoreImagePredictor:
         self.descriptor = descriptor
         self.weights_path = weights_path
         self._detector = core.load_models(
-            descriptor.id, weights_path if descriptor.id == "custom_yolo" else None
+            descriptor.id, weights_path if descriptor.id in {"custom_yolo", "yoloe"} else None
         )
 
     def predict(self, image_path: str, prompt: str, confidence: float) -> PredictionBundle:

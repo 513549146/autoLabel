@@ -9,6 +9,7 @@ from application import (
     RecoveryPolicy,
 )
 from application.workflow_templates import WorkflowComposerSettings, WorkflowTemplateRegistry
+from application.model_library import ModelLibrary
 from PySide6.QtWidgets import QStyledItemDelegate
 from ..ui import *
 
@@ -144,7 +145,13 @@ class AutoPage(QWidget):
         self._quick_workflow = QuickAnnotationWorkflow()
         self._active_template_id = "quick"
         layout = QVBoxLayout(self); layout.setContentsMargins(24, 24, 24, 24); layout.setSpacing(14)
-        header = QHBoxLayout(); header.addWidget(label("自动标注", "title")); header.addStretch(); layout.addLayout(header)
+        header = QHBoxLayout(); header.addWidget(label("自动标注", "title")); header.addStretch()
+        self.model_manager_button = button("模型管理")
+        self.model_manager_button.setObjectName("modelManagerLink")
+        self.model_manager_button.setToolTip("查看本机模型、下载官方模型或导入兼容权重")
+        self.model_manager_button.clicked.connect(lambda: self.window.show_page("model_manager"))
+        header.addWidget(self.model_manager_button)
+        layout.addLayout(header)
         # Kept as a non-visual compatibility value for workflow integrations;
         # the user-facing state now lives in the lower-right footer.
         self.project_summary = label("", "muted")
@@ -188,7 +195,7 @@ class AutoPage(QWidget):
         busy = bool(self._worker_thread and self._worker_thread.is_alive())
         self.start.setText("开始" + template.title if executable else "自有模型流程待接入")
         self.setup_title.setText(f"{template.title}配置" if executable else "图像标注配置")
-        self.start.setEnabled(bool(self.window.project_root) and executable and not busy)
+        self.start.setEnabled(bool(self.window.project_root) and executable and not busy and self.model.currentData() is not None)
         if self.window.project_root:
             state = WorkflowComposerSettings.load(self.window.project)
             enabled = set(state.applied_graph.nodes)
@@ -214,11 +221,12 @@ class AutoPage(QWidget):
             self.strategy_hint.setText("默认全图双模型补扫；大图切片补扫。")
 
     def _apply_quick_settings(self, settings):
-        model_value = (("custom_yolo", settings.model_weights_path)
-                       if settings.primary_provider_id == "custom_yolo" else settings.primary_provider_id)
-        for combo, value in ((self.model, model_value), (self.run_scope, settings.scope)):
-            index = combo.findData(value)
-            combo.setCurrentIndex(index if index >= 0 else 0)
+        model_value = ((settings.primary_provider_id, settings.model_weights_path)
+                       if settings.model_weights_path else settings.primary_provider_id)
+        model_index = self._model_index(model_value)
+        self.model.setCurrentIndex(model_index if model_index >= 0 else 0)
+        scope_index = self.run_scope.findData(settings.scope)
+        self.run_scope.setCurrentIndex(scope_index if scope_index >= 0 else 0)
         self.confidence.blockSignals(True)
         self.confidence.setValue(round(settings.confidence * 100))
         self.confidence.blockSignals(False)
@@ -250,24 +258,56 @@ class AutoPage(QWidget):
         self.category_summary.setText(preview + more)
 
     def _refresh_model_choices(self):
-        """List built-ins plus every available project-training checkpoint."""
+        """Only enabled, installed models are selectable for quick annotation."""
         selected = self.model.currentData() if hasattr(self, "model") else "yoloe"
         self.model.blockSignals(True)
         self.model.clear()
-        self.model.addItem("YOLOE（开放词表，推荐）", "yoloe")
-        self.model.addItem("Grounding DINO（兼容模型）", "gd15")
-        self.model.addItem("Grounding DINO（旧版）", "gd_ogc")
+        library = ModelLibrary()
         project = getattr(self.window, "project", None)
-        if project:
-            for run in getattr(project, "recent_training_runs", lambda _limit: [])(100):
-                weights_path = run.get("weights_path", "")
-                if not os.path.isfile(weights_path):
-                    continue
-                stamp = str(run.get("created_at", ""))[:16].replace("T", " ")
-                self.model.addItem(f"项目训练模型 · {Path(weights_path).name} · {stamp}", ("custom_yolo", weights_path))
-        index = self.model.findData(selected)
+        for entry in library.installed(project):
+            if not library.is_enabled(project, entry):
+                continue
+            if entry.provider_id == "yoloe" and os.path.normcase(entry.path) == os.path.normcase(config.YOLOE_WEIGHTS):
+                choice = "yoloe"
+            elif entry.provider_id in {"gd15", "gd_ogc"}:
+                choice = entry.provider_id
+            else:
+                choice = (entry.provider_id, entry.path)
+            source = f"{entry.origin} · " if entry.origin not in {"应用自带"} else ""
+            self.model.addItem(f"{source}{entry.title}", choice)
+        if self.model.count() == 0:
+            self.model.addItem("请在模型管理中启用模型", None)
+        index = self._model_index(selected)
         self.model.setCurrentIndex(index if index >= 0 else 0)
         self.model.blockSignals(False)
+
+    def _model_index(self, choice):
+        return next((index for index in range(self.model.count()) if self.model.itemData(index) == choice), -1)
+
+    def persist_selected_model(self):
+        choice = self.model.currentData()
+        if choice is not None and self.window.project:
+            self.select_model(choice)
+
+    def select_model(self, choice):
+        """Select a managed model and remember it for the current project."""
+        if not self.window.project:
+            return
+        self._refresh_model_choices()
+        index = self._model_index(choice)
+        if index < 0:
+            self.window.status_message("所选模型已不可用，请刷新模型管理页面")
+            return
+        self.model.setCurrentIndex(index)
+        provider_id, weights_path = choice if isinstance(choice, tuple) else (choice, "")
+        current = self._quick_workflow.load_settings(self.window.project)
+        settings = QuickAnnotationConfig(
+            prompt=current.prompt, primary_provider_id=provider_id, model_weights_path=weights_path,
+            recovery_provider_id=current.recovery_provider_id, recovery_policy=current.recovery_policy,
+            confidence=current.confidence, scope=current.scope, tiled_inference=current.tiled_inference,
+        )
+        self._quick_workflow.save_settings(self.window.project, settings)
+        self.window.status_message(f"当前模型：{self.model.currentText()}")
 
     def activate_trained_model(self, weights_path):
         """Make a completed project checkpoint the persisted pre-label default."""
@@ -275,7 +315,7 @@ class AutoPage(QWidget):
             return
         self._refresh_model_choices()
         choice = ("custom_yolo", weights_path)
-        index = self.model.findData(choice)
+        index = self._model_index(choice)
         if index >= 0:
             self.model.setCurrentIndex(index)
         current = self._quick_workflow.load_settings(self.window.project)
@@ -341,7 +381,10 @@ class AutoPage(QWidget):
         if not prompt:
             self.log.appendPlainText("提示词不能为空。"); return
         saved = QuickAnnotationSettings.load(self.window.project) if self.window.project else QuickAnnotationConfig()
-        selected_model = self.model.currentData() or "yoloe"
+        selected_model = self.model.currentData()
+        if selected_model is None:
+            self.log.appendPlainText("请先在模型管理中启用一个模型。")
+            return
         provider_id, weights_path = selected_model if isinstance(selected_model, tuple) else (selected_model, "")
         settings = QuickAnnotationConfig(
             prompt=prompt,
@@ -402,7 +445,7 @@ class AutoPage(QWidget):
             self.batch_failed.emit(f"快速标注失败：{exc}")
 
     def _on_label_finished(self, project_root: str, result, stopped: bool):
-        self.start.setEnabled(bool(self.window.project_root) and WorkflowTemplateRegistry().get(self._active_template_id).executable); self.stop.setEnabled(False)
+        self.start.setEnabled(bool(self.window.project_root) and WorkflowTemplateRegistry().get(self._active_template_id).executable and self.model.currentData() is not None); self.stop.setEnabled(False)
         if project_root != self.window.project_root:
             self.log.appendPlainText("任务完成，但当前已切换到其他项目；结果仍已保存到原项目。")
             return
@@ -417,6 +460,6 @@ class AutoPage(QWidget):
             self.window.show_page("review")
 
     def _on_label_failed(self, message: str):
-        self.start.setEnabled(bool(self.window.project_root) and WorkflowTemplateRegistry().get(self._active_template_id).executable); self.stop.setEnabled(False)
+        self.start.setEnabled(bool(self.window.project_root) and WorkflowTemplateRegistry().get(self._active_template_id).executable and self.model.currentData() is not None); self.stop.setEnabled(False)
         self.log.appendPlainText(message)
         ios_alert(self, "自动标注失败", message, confirm_text="知道了", destructive=True)

@@ -46,7 +46,7 @@ class QuickAnnotationConfig:
         scope = self.scope if self.scope in {"new", "risk", "review", "all"} else "new"
         policy = RecoveryPolicy(self.recovery_policy)
         recovery = self.recovery_provider_id if policy != RecoveryPolicy.OFF else ""
-        weights_path = str(self.model_weights_path or "") if self.primary_provider_id == "custom_yolo" else ""
+        weights_path = str(self.model_weights_path or "") if self.primary_provider_id in {"custom_yolo", "yoloe"} else ""
         return replace(self, prompt=prompt, model_weights_path=weights_path, confidence=confidence, scope=scope, recovery_policy=policy, recovery_provider_id=recovery, tiled_inference=bool(self.tiled_inference))
 
 
