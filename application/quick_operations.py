@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from PIL import Image
+from engine.image_io import _oriented_pil_size
 
 import config
 import core
@@ -175,8 +177,174 @@ class CandidateFusionOperation:
         return tuple(accepted)
 
 
+class CandidateRuleRefinementOperation:
+    """Collapse remaining same-object proposals using geometry and comparable scores.
+
+    A weak score never removes a spatially isolated candidate. Raw scores from
+    different providers are deliberately not compared.
+    """
+
+    @staticmethod
+    def _models(prediction: ImagePrediction) -> set[str]:
+        sources = prediction.sources or ((prediction.source,) if prediction.source else ())
+        return {source.split("/", 1)[0] for source in sources if source}
+
+    @staticmethod
+    def _score_for_models(prediction: ImagePrediction, models: set[str]) -> float | None:
+        scores = [float(score) for source, score in prediction.source_scores
+                  if source.split("/", 1)[0] in models and math.isfinite(float(score))]
+        if scores:
+            return max(scores)
+        if prediction.score is not None and CandidateRuleRefinementOperation._models(prediction) <= models:
+            score = float(prediction.score)
+            return score if math.isfinite(score) else None
+        return None
+
+    @staticmethod
+    def _tile_seam_clipped(bbox: tuple[int, int, int, int]) -> bool:
+        stride = round(config.HIGH_RECALL_TILE_SIZE * (1 - config.HIGH_RECALL_TILE_OVERLAP))
+        if stride <= 0:
+            return False
+        for value, offset in zip(bbox, (0, 0, config.HIGH_RECALL_TILE_SIZE, config.HIGH_RECALL_TILE_SIZE)):
+            if value <= 0:
+                continue
+            distance = (value - offset) % stride
+            if min(distance, stride - distance) <= config.RULE_TILE_EDGE_TOLERANCE:
+                return True
+        return False
+
+    @classmethod
+    def _tile_partial_pair(cls, first: ImagePrediction, second: ImagePrediction,
+                           shared_models: set[str], first_score: float | None,
+                           second_score: float | None) -> ImagePrediction | None:
+        a, b = first.bbox, second.bbox
+        area_a = (a[2] - a[0]) * (a[3] - a[1])
+        area_b = (b[2] - b[0]) * (b[3] - b[1])
+        if min(area_a, area_b) <= 0 or not shared_models:
+            return None
+        small, big = (first, second) if area_a < area_b else (second, first)
+        small_score, big_score = (first_score, second_score) if small is first else (second_score, first_score)
+        if small_score is None or big_score is None or big_score <= 0:
+            return None
+        small_sources = small.sources or ((small.source,) if small.source else ())
+        big_sources = big.sources or ((big.source,) if big.source else ())
+        if (not small_sources or not all(source.endswith("/tile") for source in small_sources) or
+                not any("/tile" not in source for source in big_sources) or
+                small_score > big_score * config.RULE_TILE_WEAKER_RATIO or
+                not cls._tile_seam_clipped(small.bbox)):
+            return None
+        s, g = small.bbox, big.bbox
+        sw, sh, gw, gh = s[2] - s[0], s[3] - s[1], g[2] - g[0], g[3] - g[1]
+        overlap = max(0, min(s[2], g[2]) - max(s[0], g[0])) * max(0, min(s[3], g[3]) - max(s[1], g[1]))
+        containment = overlap / (sw * sh)
+        area_ratio = (gw * gh) / (sw * sh)
+        center_shift = max(abs(s[0] + s[2] - g[0] - g[2]) / (2 * max(sw, gw)),
+                           abs(s[1] + s[3] - g[1] - g[3]) / (2 * max(sh, gh)))
+        if (containment >= config.RULE_TILE_CONTAINMENT and
+                area_ratio <= config.RULE_TILE_AREA_RATIO and
+                center_shift <= config.RULE_TILE_CENTER_SHIFT):
+            return big
+        return None
+
+    @classmethod
+    def _same_object(cls, first: ImagePrediction, second: ImagePrediction) -> bool:
+        if first.label != second.label:
+            return False
+        a, b = first.bbox, second.bbox
+        aw, ah, bw, bh = a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1]
+        if min(aw, ah, bw, bh) <= 0:
+            return False
+        overlap = _iou(a, b)
+        area_ratio = max(aw * ah, bw * bh) / min(aw * ah, bw * bh)
+        center_shift = max(abs(a[0] + a[2] - b[0] - b[2]) / (2 * max(aw, bw)),
+                           abs(a[1] + a[3] - b[1] - b[3]) / (2 * max(ah, bh)))
+        if (overlap >= config.RULE_STRONG_IOU and
+                area_ratio <= config.RULE_STRONG_AREA_RATIO and
+                center_shift <= config.RULE_STRONG_CENTER_SHIFT):
+            return True
+        shared_models = cls._models(first) & cls._models(second)
+        if not shared_models:
+            return False
+        first_score = cls._score_for_models(first, shared_models)
+        second_score = cls._score_for_models(second, shared_models)
+        if first_score is None or second_score is None or max(first_score, second_score) <= 0:
+            return False
+        if (overlap >= config.RULE_SCORED_IOU and
+                area_ratio <= config.RULE_SCORED_AREA_RATIO and
+                center_shift <= config.RULE_SCORED_CENTER_SHIFT and
+                min(first_score, second_score) / max(first_score, second_score) <= config.RULE_SCORED_WEAKER_RATIO):
+            return True
+        return cls._tile_partial_pair(first, second, shared_models, first_score, second_score) is not None
+
+    @classmethod
+    def _combine(cls, group: list[ImagePrediction]) -> ImagePrediction:
+        common_models = set.intersection(*(cls._models(item) for item in group))
+        weights = [cls._score_for_models(item, common_models) if common_models else None for item in group]
+        if not common_models or any(weight is None for weight in weights):
+            weights = [1.0] * len(group)
+        weights = [max(0.05, weight) for weight in weights]
+        total = sum(weights)
+        bbox = tuple(round(sum(item.bbox[axis] * weight for item, weight in zip(group, weights)) / total)
+                     for axis in range(4))
+        for first in group:
+            for second in group:
+                if first is second:
+                    continue
+                shared = cls._models(first) & cls._models(second)
+                big = cls._tile_partial_pair(first, second, shared,
+                                             cls._score_for_models(first, shared),
+                                             cls._score_for_models(second, shared))
+                if big is not None:
+                    bbox = big.bbox
+                    break
+            else:
+                continue
+            break
+        sources = tuple(dict.fromkeys(source for item in group
+                                      for source in (item.sources or (item.source,)) if source))
+        source_scores: dict[str, float] = {}
+        for item in group:
+            pairs = item.source_scores or (((item.source, item.score),)
+                                           if item.source and item.score is not None else ())
+            for source, score in pairs:
+                source_scores[source] = max(source_scores.get(source, float("-inf")), float(score))
+        flags = {flag for item in group for flag in item.risk_flags}
+        if len({source.split("/", 1)[0] for source in sources}) > 1:
+            flags.discard("single_model")
+        if any("/tile" not in source for source in sources):
+            flags.discard("tile_only")
+        scores = [item.score for item in group if item.score is not None]
+        verified = next((item for item in group if item.source == "yolo11n_verify" and
+                         "class_conflict" in item.risk_flags), None)
+        representative = verified or group[0]
+        alternatives = tuple(dict.fromkeys(label for item in group for label in item.alternate_labels
+                                           if label != representative.label))
+        return replace(representative, bbox=bbox,
+                       score=verified.score if verified else max(scores) if scores else None,
+                       sources=sources, source_scores=tuple(source_scores.items()),
+                       risk_flags=tuple(sorted(flags)), alternate_labels=alternatives)
+
+    def execute(self, predictions: tuple[ImagePrediction, ...],
+                blocked_pairs: frozenset[tuple[int, int]] = frozenset()) -> tuple[ImagePrediction, ...]:
+        groups: list[list[tuple[int, ImagePrediction]]] = []
+        for index, candidate in sorted(enumerate(predictions),
+                                       key=lambda item: (item[1].label, item[1].bbox, item[1].source)):
+            matches = [group for group in groups
+                       if all((min(index, member_index), max(index, member_index)) not in blocked_pairs
+                              and self._same_object(candidate, member)
+                              for member_index, member in group)]
+            # Two plausible groups signal a crowded scene; retain the candidate.
+            if len(matches) == 1:
+                matches[0].append((index, candidate))
+            else:
+                groups.append([(index, candidate)])
+        result = [(min(index for index, _ in group), self._combine([item for _, item in group])
+                   if len(group) > 1 else group[0][1]) for group in groups]
+        return tuple(item for _, item in sorted(result, key=lambda pair: pair[0]))
+
+
 class CandidateClassAlignmentOperation:
-    """Canonicalize known labels without dropping unfamiliar model phrases."""
+    """Keep only configured project classes in persisted preannotations."""
 
     def execute(self, bundles, category_names):
         canonical = {name.strip().casefold(): name.strip() for name in category_names if name.strip()}
@@ -188,11 +356,10 @@ class CandidateClassAlignmentOperation:
             for proposal in bundle.predictions:
                 label = proposal.label.strip().strip(" .")
                 matched = canonical.get(label.casefold())
-                flags = set(proposal.risk_flags)
                 if canonical and not matched:
-                    flags.add("unknown_label")
+                    continue
                 proposals.append(replace(proposal, label=matched or label or "object",
-                                         risk_flags=tuple(sorted(flags))))
+                                         risk_flags=proposal.risk_flags))
             aligned.append(replace(bundle, predictions=tuple(proposals)))
         return tuple(aligned)
 
@@ -220,7 +387,7 @@ class CandidateBoundsOperation:
 
     def execute(self, image_path: str, predictions: tuple[ImagePrediction, ...]) -> tuple[ImagePrediction, ...]:
         with Image.open(image_path) as image:
-            width, height = image.size
+            width, height = _oriented_pil_size(image)
         cleaned = []
         for prediction in predictions:
             left, top, right, bottom = prediction.bbox

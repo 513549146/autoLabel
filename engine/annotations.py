@@ -48,6 +48,9 @@ def load_voc_xml(xml_path):
         flags = [str(node.text).strip() for node in obj.findall("review_flags/flag") if node.text]
         if flags:
             annotation["risk_flags"] = flags
+        alternate_labels = [str(node.text).strip() for node in obj.findall("alternate_labels/label") if node.text]
+        if alternate_labels:
+            annotation["alternate_labels"] = alternate_labels
         points = []
         for point in obj.findall("polygon/pt"):
             try:
@@ -86,7 +89,8 @@ def annotation_issues(annotations, image_path=None):
         issues.update(
             flag
             for flag in (annotation.get("risk_flags") or ())
-            if flag in {"single_model", "tile_only", "unknown_label"}
+            if flag in {"single_model", "tile_only", "unknown_label", "class_conflict",
+                       "weak_mask_merge", "tile_fragment_merge"}
         )
         try:
             x1, y1, x2, y2 = [float(value) for value in annotation.get("bbox", (0, 0, 0, 0))]
@@ -134,6 +138,9 @@ def annotation_risk(annotations, image_path=None):
         "single_model": 35,
         "tile_only": 25,
         "unknown_label": 55,
+        "class_conflict": 60,
+        "weak_mask_merge": 45,
+        "tile_fragment_merge": 45,
     }
     score = sum(weights.get(issue, 0) for issue in issues)
     scores = []

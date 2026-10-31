@@ -30,3 +30,11 @@ def _imread_unicode(path):
     with open(path, "rb") as f:
         data = np.frombuffer(f.read(), dtype=np.uint8)
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _oriented_pil_size(image):
+    """Return dimensions in the display/inference orientation of an EXIF image."""
+    width, height = image.size
+    getexif = getattr(image, "getexif", None)
+    orientation = getexif().get(274, 1) if getexif is not None else 1
+    return (height, width) if orientation in {5, 6, 7, 8} else (width, height)

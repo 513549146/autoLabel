@@ -571,6 +571,9 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
             "single_model": "仅单模型发现",
             "tile_only": "仅切片发现",
             "unknown_label": "待确认类别",
+            "class_conflict": "类别冲突待核验",
+            "weak_mask_merge": "低分局部框待核验",
+            "tile_fragment_merge": "切片截断框待核验",
         }
         result = self._risk_for(filename)
         if result is None:
@@ -943,8 +946,6 @@ class ReviewPage(ReviewDrawerMixin, ReviewNavigationMixin, ReviewThumbnailMixin,
     def _update_annotation_state_hint(self, index):
         if 0 <= index < len(self.canvas.shapes):
             self.annotation_state_hint.setText("标注来源：" + ImageCanvas.provenance_text(self.canvas.shapes[index]))
-        elif len(self.canvas.shapes) > ImageCanvas.COMPACT_LABEL_THRESHOLD:
-            self.annotation_state_hint.setText("框较多：悬停查看类别，标注清单可逐项定位")
         else:
             self.annotation_state_hint.setText("")
         self.annotation_state_hint.setVisible(bool(self.annotation_state_hint.text()))

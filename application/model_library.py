@@ -35,6 +35,11 @@ class InstalledModel:
 
 DOWNLOADABLE_MODELS = (
     DownloadableModel(
+        "sam2.1-tiny", "SAM 2.1 Tiny", "sam2.1_t.pt", "sam2",
+        "https://github.com/ultralytics/assets/releases/download/v8.3.0/sam2.1_t.pt",
+        "辅助分割 · 仅对重叠候选生成掩码，供预标注去重",
+    ),
+    DownloadableModel(
         "yoloe-11s", "YOLOE-11s", "yoloe-11s-seg.pt", "yoloe",
         "https://github.com/ultralytics/assets/releases/download/v8.3.0/yoloe-11s-seg.pt",
         "开放词表 · 较轻量 · 按项目类别提示检测",
@@ -151,12 +156,14 @@ class ModelLibrary:
             found.append(InstalledModel(title, provider, str(path), origin, detail))
 
         add("YOLOE-11l", "yoloe", Path(config.YOLOE_WEIGHTS), "应用自带", "开放词表 · 按项目类别提示检测")
+        add("SAM 2.1 Tiny", "sam2", Path(config.WEIGHTS_DIR) / "sam2.1_t.pt",
+            "应用自带", "辅助分割 · 仅用于掩码去重")
         gd15 = Path(config.GD15_DIR) / "model.safetensors"
         add("Grounding DINO Base", "gd15", gd15, "应用自带", "开放词表 · 兼容模型")
         add("Grounding DINO SwinT", "gd_ogc", Path(config.GROUNDINGDINO_WEIGHTS), "应用自带", "开放词表 · 旧版")
         for path in sorted(Path(config.WEIGHTS_DIR).glob("*.pt")):
             name = path.name.lower()
-            if name.startswith("yoloe-") or any(part in name for part in ("-seg", "-pose", "-obb", "-cls")):
+            if name.startswith(("yoloe-", "sam2.")) or any(part in name for part in ("-seg", "-pose", "-obb", "-cls")):
                 continue
             add(path.stem, "custom_yolo", path, "应用自带", "YOLO 检测权重 · 使用权重自带类别")
         for offer in DOWNLOADABLE_MODELS:
@@ -176,7 +183,7 @@ class ModelLibrary:
     def validate_checkpoint(path: Path, provider_id: str) -> None:
         """Load a user-selected checkpoint using the same backend as inference."""
         if path.suffix.lower() != ".pt" or not path.is_file() or path.stat().st_size == 0:
-            raise ValueError("仅支持非空的 Ultralytics YOLO 检测 .pt 权重")
+            raise ValueError("仅支持非空的兼容 .pt 权重")
         if provider_id == "yoloe":
             from ultralytics import YOLOE
             model = YOLOE(str(path))
@@ -189,6 +196,11 @@ class ModelLibrary:
                 raise ValueError("仅支持目标检测权重；分割、姿态、分类和旋转框暂不能导入")
             if not model.names:
                 raise ValueError("模型没有可读取的类别名称")
+        elif provider_id == "sam2":
+            from ultralytics import SAM
+            model = SAM(str(path))
+            if model.task != "segment":
+                raise ValueError("此权重不是 SAM 分割模型")
         else:
             raise ValueError("不支持的模型类型")
 
@@ -223,7 +235,8 @@ class ModelLibrary:
         if destination.is_file():
             return destination
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(prefix=".download-", suffix=".pt", dir=destination.parent, delete=False) as temporary:
+        with tempfile.NamedTemporaryFile(prefix=".download-", suffix="-" + offer.filename,
+                                         dir=destination.parent, delete=False) as temporary:
             temporary_path = Path(temporary.name)
         try:
             request = urllib.request.Request(offer.url, headers={"User-Agent": "autoLabel-model-manager/1.0"})

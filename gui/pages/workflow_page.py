@@ -325,7 +325,8 @@ class WorkflowPage(QWidget):
         settings = QuickAnnotationSettings.load(self.window.project)
         policy = (RecoveryPolicy(self.recovery_policy.currentData() or RecoveryPolicy.ALL_IMAGES.value)
                   if "recovery_model" in graph.nodes else RecoveryPolicy.OFF)
-        QuickAnnotationSettings.save(self.window.project, replace(settings, recovery_policy=policy))
+        QuickAnnotationSettings.save(self.window.project, replace(
+            settings, recovery_policy=policy, tiled_inference="tile_scan" in graph.nodes))
         self._save_timer.stop()
         self._save_state()
         self._render_applied()

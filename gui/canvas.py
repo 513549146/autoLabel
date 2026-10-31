@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 
 from .ui import *
@@ -13,7 +14,6 @@ class ImageCanvas(QWidget):
     """交互控件；页面通过 Qt 信号接收变更并负责保存到项目。"""
 
     COLORS = ["#8A3FFC", "#FF8A00", "#31C48D", "#FF3B30", "#F2C94C", "#EC4899", "#39A9FF"]
-    COMPACT_LABEL_THRESHOLD = 18
     shapes_changed = Signal(object)
     selection_changed = Signal(int)
     box_created = Signal(int)
@@ -35,7 +35,6 @@ class ImageCanvas(QWidget):
         self.zoom = 1.0
         self.pan = QPointF()
         self.selected_index = -1
-        self._hover_index = -1
         self.default_label = "object"
         self.visible_categories: set[str] | None = None
         self.hidden_indices: set[int] = set()
@@ -74,7 +73,7 @@ class ImageCanvas(QWidget):
                 item["score"] = shape["score"]
             if shape.get("origin") in {"manual", "revised", "verified"}:
                 item["origin"] = shape["origin"]
-            for key in ("sources", "risk_flags"):
+            for key in ("sources", "risk_flags", "alternate_labels"):
                 if shape.get(key):
                     item[key] = list(shape[key])
             if shape.get("source_scores"):
@@ -92,7 +91,8 @@ class ImageCanvas(QWidget):
         try:
             if shape.get("score") is not None:
                 names = {"yoloe": "YOLOE", "gd15": "Grounding DINO",
-                         "gd_ogc": "Grounding DINO 旧版", "custom_yolo": "YOLO"}
+                         "gd_ogc": "Grounding DINO 旧版", "custom_yolo": "YOLO",
+                         "yolo11n_verify": "YOLO11n 辅助复核"}
                 raw_sources = [str(value) for value in shape.get("sources", ()) if value]
                 friendly = list(dict.fromkeys(names.get(value.split("/", 1)[0], "其他模型")
                                                for value in raw_sources))
@@ -100,16 +100,45 @@ class ImageCanvas(QWidget):
                 if raw_sources and any("/tile" in value for value in raw_sources):
                     source_text += "（含切片）" if any("/tile" not in value for value in raw_sources) else "（切片）"
                 suffix = f" · {source_text}" if source_text else ""
+                if "class_conflict" in shape.get("risk_flags", ()):
+                    alternatives = "、".join(str(label) for label in shape.get("alternate_labels", ()))
+                    original = f" · 原候选：{alternatives}" if alternatives else ""
+                    decision = ("YOLO11n 辅助选类" if "yolo11n_verify" in raw_sources
+                                else "整图模型选类")
+                    return f"{decision} · {float(shape['score']) * 100:.0f}% · 待人工核验{original}{suffix}"
+                if "weak_mask_merge" in shape.get("risk_flags", ()):
+                    return f"整图框吸收低分局部框 · {float(shape['score']) * 100:.0f}% · 待人工核验{suffix}"
+                if "tile_fragment_merge" in shape.get("risk_flags", ()):
+                    return f"整图框吸收切片截断框 · {float(shape['score']) * 100:.0f}% · 待人工核验{suffix}"
                 return f"模型候选 · 最高分 {float(shape['score']) * 100:.0f}%{suffix}"
         except (TypeError, ValueError):
             pass
         return "历史标注"
 
     @staticmethod
+    def caption_text(shape):
+        """Show the class plus a truthful score or review state on every box."""
+        name = str(shape.get("display_name") or shape.get("name") or "object")
+        states = {"manual": "人工标注", "revised": "已修订", "verified": "已核验"}
+        state = states.get(shape.get("origin"))
+        if state:
+            return f"{name} · {state}"
+        try:
+            raw_score = shape.get("score")
+            if raw_score is not None:
+                score = float(raw_score)
+                if math.isfinite(score) and 0 <= score <= 1:
+                    return f"{name} {score * 100:.0f}%"
+        except (TypeError, ValueError):
+            pass
+        return f"{name} · 历史标注"
+
+    @staticmethod
     def _mark_manually_touched(shape):
         """Remove stale model confidence while retaining a clear human-work state."""
         shape.pop("score", None)
         shape.pop("risk_flags", None)
+        shape.pop("alternate_labels", None)
         if shape.get("origin") != "manual":
             shape["origin"] = "revised"
 
@@ -124,7 +153,7 @@ class ImageCanvas(QWidget):
         self.shapes = self._copy_shapes(shapes)
         if path and os.path.isfile(path):
             cached = self._pixmap_cache.pop(path, None)
-            self._pixmap = cached if cached is not None else QPixmap(path)
+            self._pixmap = cached if cached is not None else load_oriented_pixmap(path)
             self._pixmap_cache[path] = self._pixmap
             while len(self._pixmap_cache) > 12:
                 self._pixmap_cache.pop(next(iter(self._pixmap_cache)))
@@ -136,7 +165,6 @@ class ImageCanvas(QWidget):
         self.zoom = 1.0
         self.pan = QPointF()
         self.selected_index = -1
-        self._hover_index = -1
         self._last_click_point = None
         self._last_click_index = -1
         self.hidden_indices.clear()
@@ -152,7 +180,7 @@ class ImageCanvas(QWidget):
         for path in paths:
             if not path or path in self._pixmap_cache or not os.path.isfile(path):
                 continue
-            pixmap = QPixmap(path)
+            pixmap = load_oriented_pixmap(path)
             if not pixmap.isNull():
                 self._pixmap_cache[path] = pixmap
         while len(self._pixmap_cache) > 12:
@@ -388,11 +416,6 @@ class ImageCanvas(QWidget):
 
     def _set_hover_cursor(self, point: QPointF):
         image_point = self._to_image(point)
-        hover_index = self._shape_index_at(image_point) if image_point else -1
-        if hover_index != self._hover_index:
-            self._hover_index = hover_index
-            if len(self.shapes) > self.COMPACT_LABEL_THRESHOLD:
-                self.update()
         if self.tool == "polygon" and self._polygon_draft:
             self.setCursor(Qt.CrossCursor)
         elif self._handle_at(point):
@@ -635,7 +658,6 @@ class ImageCanvas(QWidget):
             )
             self._display_cache_key = cache_key
         painter.drawPixmap(target.topLeft(), self._display_cache)
-        compact_labels = sum(self._is_visible(index) for index in range(len(self.shapes))) > self.COMPACT_LABEL_THRESHOLD
         for index, shape in enumerate(self.shapes):
             if not self._is_visible(index):
                 continue
@@ -675,14 +697,13 @@ class ImageCanvas(QWidget):
                     selected_fill.setAlpha(28)
                     painter.fillRect(rect, selected_fill)
                 painter.drawRect(rect)
-            if not compact_labels or index in {self.selected_index, self._hover_index}:
-                caption = shape.get("display_name") or shape.get("name", "object")
-                painter.setFont(QFont("Microsoft YaHei UI", 10, QFont.Bold))
-                width = max(46, painter.fontMetrics().horizontalAdvance(caption) + 16)
-                caption_rect = QRectF(rect.x(), max(target.y(), rect.y() - 25), width, 24)
-                painter.fillRect(caption_rect, color)
-                painter.setPen(Qt.white)
-                painter.drawText(caption_rect, Qt.AlignCenter, caption)
+            caption = self.caption_text(shape)
+            painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
+            width = max(36, painter.fontMetrics().horizontalAdvance(caption) + 12)
+            caption_rect = QRectF(rect.x(), max(target.y(), rect.y() - 21), width, 20)
+            painter.fillRect(caption_rect, color)
+            painter.setPen(Qt.white)
+            painter.drawText(caption_rect, Qt.AlignCenter, caption)
             if index == self.selected_index and shape.get("type") != "polygon":
                 painter.setBrush(Qt.white)
                 painter.setPen(QPen(color, 2))
@@ -833,12 +854,6 @@ class ImageCanvas(QWidget):
         else:
             self._set_hover_cursor(point)
         super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event):
-        if self._hover_index != -1:
-            self._hover_index = -1
-            self.update()
-        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:

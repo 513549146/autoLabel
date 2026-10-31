@@ -65,6 +65,21 @@ FUSION_SAME_FULL_IOU = 0.90
 FUSION_MAX_CENTER_SHIFT = 0.16
 FUSION_MAX_AREA_RATIO = 1.60
 
+# Final score-aware rule refinement. Scores are compared only within the same
+# provider family; isolated low-score proposals remain available for review.
+RULE_STRONG_IOU = 0.82
+RULE_STRONG_CENTER_SHIFT = 0.16
+RULE_STRONG_AREA_RATIO = 1.50
+RULE_SCORED_IOU = 0.68
+RULE_SCORED_CENTER_SHIFT = 0.12
+RULE_SCORED_AREA_RATIO = 1.40
+RULE_SCORED_WEAKER_RATIO = 0.85
+RULE_TILE_CONTAINMENT = 0.85
+RULE_TILE_AREA_RATIO = 2.50
+RULE_TILE_CENTER_SHIFT = 0.28
+RULE_TILE_WEAKER_RATIO = 0.70
+RULE_TILE_EDGE_TOLERANCE = 5
+
 # Review triage.  Existing/imported annotations with no score are not treated
 # as low-confidence predictions.
 REVIEW_LOW_CONFIDENCE = 0.45

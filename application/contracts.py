@@ -22,6 +22,7 @@ class ImagePrediction:
     risk_flags: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     source_scores: tuple[tuple[str, float], ...] = ()
+    alternate_labels: tuple[str, ...] = ()
 
     def as_annotation(self) -> dict:
         annotation = {"name": self.label, "bbox": list(self.bbox)}
@@ -32,6 +33,8 @@ class ImagePrediction:
             annotation["source_scores"] = [[source, score] for source, score in self.source_scores]
         if self.risk_flags:
             annotation["risk_flags"] = list(self.risk_flags)
+        if self.alternate_labels:
+            annotation["alternate_labels"] = list(self.alternate_labels)
         return annotation
 
 

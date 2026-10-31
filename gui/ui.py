@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QFontDatabase,
     QIcon,
     QImage,
+    QImageReader,
     QKeySequence,
     QPainter,
     QPainterPath,
@@ -71,6 +72,13 @@ from project import (
     load_project_manifest,
     resolve_project_directory,
 )
+
+
+def load_oriented_pixmap(path: str) -> QPixmap:
+    """Decode JPEG EXIF orientation before annotation coordinates are displayed."""
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    return QPixmap.fromImage(reader.read())
 
 
 class FlowLayout(QLayout):

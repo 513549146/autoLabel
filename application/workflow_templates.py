@@ -11,6 +11,7 @@ class WorkflowStepTemplate:
     title: str
     detail: str
     optional: bool = False
+    default_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -24,17 +25,19 @@ class WorkflowTemplate:
 
 
 QUICK_WORKFLOW = WorkflowTemplate(
-    id="quick", title="快速标注", subtitle="全图双模型 · 大图切片 · 重复框合并 · 人工复核", executable=True,
+    id="quick", title="快速标注", subtitle="全图双模型 · 按需切片 · 掩码去重 · 规则精简 · 人工复核", executable=True,
     steps=(
         WorkflowStepTemplate("project_images", "项目图片", "导入或已有图片"),
         WorkflowStepTemplate("target_queue", "目标队列", "未标注 / 风险 / 待审核"),
         WorkflowStepTemplate("image_check", "图片检查", "文件可读性校验"),
         WorkflowStepTemplate("primary_model", "主模型检测", "开放词表候选"),
         WorkflowStepTemplate("recovery_model", "召回补扫", "默认每张图运行第二模型", optional=True),
-        WorkflowStepTemplate("tile_scan", "大图切片补扫", "长边 ≥1600px 时启用模型重叠切片"),
-        WorkflowStepTemplate("class_alignment", "类别对齐", "映射项目类别，保留未知类别"),
+        WorkflowStepTemplate("tile_scan", "大图切片补扫", "长边 ≥1600px 时仅用主模型补扫；可能增加耗时和误报", optional=True, default_enabled=False),
+        WorkflowStepTemplate("class_alignment", "类别对齐", "只保留类别表中的英文标签，忽略模型输出的其他类别"),
         WorkflowStepTemplate("candidate_fusion", "重复框合并", "仅合并同类、中心和尺寸接近的重叠候选；保留独立框与模型来源"),
         WorkflowStepTemplate("review_triage", "分歧标记", "单模型和仅切片候选优先复核"),
+        WorkflowStepTemplate("sam_mask_refinement", "SAM 实例融合", "用整图框与掩码吸收切片局部框；跨类别冲突可由 YOLO11n 辅助核验"),
+        WorkflowStepTemplate("rule_refinement", "规则精简", "按重叠、位置、面积和同模型分数合并剩余重复框；保留独立候选"),
         WorkflowStepTemplate("risk_and_version", "风险与版本", "质量规则、XML 快照"),
         WorkflowStepTemplate("human_review", "人工复核", "自动进入审核队列"),
     ),
@@ -42,8 +45,11 @@ QUICK_WORKFLOW = WorkflowTemplate(
         ("project_images", "target_queue"), ("target_queue", "image_check"),
         ("image_check", "primary_model"), ("primary_model", "recovery_model"),
         ("primary_model", "tile_scan"), ("recovery_model", "tile_scan"),
+        ("primary_model", "class_alignment"), ("recovery_model", "class_alignment"),
         ("tile_scan", "class_alignment"), ("class_alignment", "candidate_fusion"),
-        ("candidate_fusion", "review_triage"), ("review_triage", "risk_and_version"),
+        ("candidate_fusion", "review_triage"), ("review_triage", "sam_mask_refinement"),
+        ("sam_mask_refinement", "rule_refinement"),
+        ("rule_refinement", "risk_and_version"),
         ("risk_and_version", "human_review"),
     ),
 )
@@ -69,18 +75,20 @@ OWN_MODEL_WORKFLOW = WorkflowTemplate(
 )
 
 CUSTOM_WORKFLOW = WorkflowTemplate(
-    id="custom", title="自定义流程", subtitle="通用模型 · 可选补扫与候选边界整理 · 人工复核", executable=True,
+    id="custom", title="自定义流程", subtitle="通用模型 · 可选补扫、切片与边界整理 · 掩码去重 · 规则精简 · 人工复核", executable=True,
     steps=(
         WorkflowStepTemplate("project_images", "项目图片", "导入或已有图片"),
         WorkflowStepTemplate("target_queue", "目标队列", "按处理范围选取图片"),
         WorkflowStepTemplate("image_check", "图片检查", "文件可读性校验"),
         WorkflowStepTemplate("primary_model", "主模型检测", "开放词表候选"),
         WorkflowStepTemplate("recovery_model", "召回补扫", "空标注或全量补扫", optional=True),
-        WorkflowStepTemplate("tile_scan", "大图切片补扫", "长边 ≥1600px 时启用模型重叠切片"),
-        WorkflowStepTemplate("class_alignment", "类别对齐", "映射项目类别，保留未知类别"),
+        WorkflowStepTemplate("tile_scan", "大图切片补扫", "长边 ≥1600px 时仅用主模型补扫；可能增加耗时和误报", optional=True, default_enabled=False),
+        WorkflowStepTemplate("class_alignment", "类别对齐", "只保留类别表中的英文标签，忽略模型输出的其他类别"),
         WorkflowStepTemplate("candidate_fusion", "重复框合并", "仅合并同类、中心和尺寸接近的重叠候选；保留独立框与模型来源"),
         WorkflowStepTemplate("review_triage", "分歧标记", "单模型和仅切片候选优先复核"),
         WorkflowStepTemplate("bounds_check", "边界整理", "裁剪越界框，过滤无效框", optional=True),
+        WorkflowStepTemplate("sam_mask_refinement", "SAM 实例融合", "用整图框与掩码吸收切片局部框；跨类别冲突可由 YOLO11n 辅助核验"),
+        WorkflowStepTemplate("rule_refinement", "规则精简", "按重叠、位置、面积和同模型分数合并剩余重复框；保留独立候选"),
         WorkflowStepTemplate("risk_and_version", "风险与版本", "质量规则、XML 快照"),
         WorkflowStepTemplate("human_review", "人工复核", "自动进入审核队列"),
     ),
@@ -88,10 +96,13 @@ CUSTOM_WORKFLOW = WorkflowTemplate(
         ("project_images", "target_queue"), ("target_queue", "image_check"),
         ("image_check", "primary_model"), ("primary_model", "recovery_model"),
         ("primary_model", "tile_scan"), ("recovery_model", "tile_scan"),
+        ("primary_model", "class_alignment"), ("recovery_model", "class_alignment"),
         ("tile_scan", "class_alignment"), ("class_alignment", "candidate_fusion"),
         ("candidate_fusion", "review_triage"),
-        ("review_triage", "bounds_check"), ("review_triage", "risk_and_version"),
-        ("bounds_check", "risk_and_version"), ("risk_and_version", "human_review"),
+        ("review_triage", "bounds_check"), ("review_triage", "sam_mask_refinement"),
+        ("bounds_check", "sam_mask_refinement"), ("sam_mask_refinement", "rule_refinement"),
+        ("rule_refinement", "risk_and_version"),
+        ("risk_and_version", "human_review"),
     ),
 )
 
@@ -116,7 +127,10 @@ class WorkflowGraph:
 
     @classmethod
     def preset(cls, template: WorkflowTemplate) -> "WorkflowGraph":
-        return cls(template.id, tuple(step.id for step in template.steps), template.edges)
+        nodes = tuple(step.id for step in template.steps if not step.optional or step.default_enabled)
+        active = set(nodes)
+        return cls(template.id, nodes,
+                   tuple(edge for edge in template.edges if edge[0] in active and edge[1] in active))
 
     def validate(self, template: WorkflowTemplate) -> tuple[str, ...]:
         errors: list[str] = []
@@ -141,7 +155,8 @@ class WorkflowGraph:
             errors.append("必经步骤之间的依赖不能断开")
         for step in template.steps:
             if step.optional and step.id in nodes:
-                branch = {edge for edge in template.edges if step.id in edge}
+                branch = {edge for edge in template.edges if step.id in edge and
+                          edge[0] in nodes and edge[1] in nodes}
                 if not branch.issubset(edges):
                     errors.append(f"“{step.title}”需要保留输入和输出连线")
         incoming = {node: 0 for node in nodes}
@@ -176,7 +191,9 @@ class WorkflowGraph:
         if not any(step.id == step_id and step.optional for step in template.steps):
             raise ValueError("只能添加可选步骤")
         nodes = tuple(step.id for step in template.steps if step.id in self.nodes or step.id == step_id)
-        combined = set(self.edges) | {edge for edge in template.edges if step_id in edge}
+        active = set(nodes)
+        combined = set(self.edges) | {edge for edge in template.edges if step_id in edge and
+                                      edge[0] in active and edge[1] in active}
         edges = tuple(edge for edge in template.edges if edge in combined)
         edges += tuple(edge for edge in self.edges if edge not in template.edges)
         return WorkflowGraph(self.template_id, nodes, edges)
@@ -254,18 +271,31 @@ class WorkflowComposerSettings:
 
     @staticmethod
     def _upgrade_graph(template: WorkflowTemplate, graph: WorkflowGraph) -> WorkflowGraph | None:
-        """Insert newly mandatory stages into saved v2 quick/custom diagrams."""
-        added = {"tile_scan", "class_alignment", "review_triage"}
-        if template.id not in ("quick", "custom") or added.issubset(graph.nodes):
+        """Keep saved choices while adding new mandatory stages and bypass links."""
+        if template.id not in ("quick", "custom"):
             return graph
         known = {step.id for step in template.steps}
         if graph.template_id != template.id or not set(graph.nodes).issubset(known):
             return None
-        upgraded = WorkflowGraph.preset(template)
-        for step in template.steps:
-            if step.optional and step.id not in graph.nodes:
-                upgraded = upgraded.without_optional(template, step.id)
-        return upgraded
+        added = {"class_alignment", "review_triage", "sam_mask_refinement", "rule_refinement"}
+        if not added.issubset(graph.nodes):
+            upgraded = WorkflowGraph.preset(template)
+            for step in template.steps:
+                if not step.optional:
+                    continue
+                if step.id in graph.nodes and step.id not in upgraded.nodes:
+                    upgraded = upgraded.with_optional(template, step.id)
+                elif step.id not in graph.nodes and step.id in upgraded.nodes:
+                    upgraded = upgraded.without_optional(template, step.id)
+            return upgraded
+        # Previously tile_scan was mandatory, so older diagrams lack the direct
+        # full-image path around it. Add only those links; preserve user edits.
+        bypass = {("primary_model", "class_alignment")}
+        if "recovery_model" in graph.nodes:
+            bypass.add(("recovery_model", "class_alignment"))
+        missing = bypass - set(graph.edges)
+        return (WorkflowGraph(graph.template_id, graph.nodes, (*graph.edges, *sorted(missing)))
+                if missing else graph)
 
     @classmethod
     def _decode_graph(cls, key: str, data) -> WorkflowGraph | None:

@@ -6,7 +6,7 @@ import uuid
 from xml.etree import ElementTree as ET
 
 import cv2
-from PIL import Image
+from PIL import Image, ImageOps
 
 import config
 
@@ -164,7 +164,8 @@ def _detect_gd15(detector, image_path, prompt, box_threshold, text_threshold):
     processor = detector.processor
     device = detector.device
 
-    image = Image.open(image_path).convert("RGB")
+    with Image.open(image_path) as opened:
+        image = ImageOps.exif_transpose(opened).convert("RGB")
     w, h = image.size
     inputs = processor(images=image, text=prompt, return_tensors="pt").to(device)
 
@@ -216,24 +217,27 @@ def _load_yoloe(weights_path=None):
     return YOLOE(path)
 
 
-def _parse_yoloe_classes(prompt):
-    """将现有的“类别 . 类别”提示词转换为 YOLOE 所需的类别列表。"""
+def _parse_requested_classes(prompt):
+    """将项目类别提示词转换为模型推理使用的英文类别列表。"""
     classes = [part.strip() for part in prompt.replace("，", ",").replace("。", ".").replace(",", ".").split(".")]
     classes = [name for name in classes if name]
     if not classes:
-        raise ValueError("YOLOE 需要至少一个类别提示词，例如：person . helmet . forklift")
+        raise ValueError("预标注需要至少一个类别提示词，例如：person . helmet . forklift")
     return classes
 
 
 def _detect_yoloe(detector, image_path, prompt, box_threshold, text_threshold):
     """以文本类别提示运行 YOLOE，并输出与现有 VOC 管线一致的检测框。"""
     model = detector.model
-    classes = _parse_yoloe_classes(prompt)
-    # Ultralytics MobileCLIP resolves its auxiliary checkpoint from the process
-    # working directory. Keep it alongside the primary YOLOE weights instead of
-    # downloading another copy beside the executable.
-    with _working_directory(config.WEIGHTS_DIR):
-        model.set_classes(classes)
+    classes = _parse_requested_classes(prompt)
+    selected_classes = tuple(classes)
+    if getattr(detector, "_selected_classes", None) != selected_classes:
+        # YOLOE text encoding is expensive; the same project prompt is reused
+        # for the full image and every tile until the project classes change.
+        # MobileCLIP resolves its auxiliary checkpoint from this directory.
+        with _working_directory(config.WEIGHTS_DIR):
+            model.set_classes(classes)
+        detector._selected_classes = selected_classes
     results = model.predict(
         image_path,
         conf=box_threshold,
@@ -266,11 +270,19 @@ def _load_yolo(weights_path=None):
 
 def _detect_yolo(detector, image_path, prompt, box_threshold, text_threshold):
     model = detector.model
+    requested = {name.casefold() for name in _parse_requested_classes(prompt)}
+    names = model.names
+    indexed_names = names.items() if isinstance(names, dict) else enumerate(names)
+    class_ids = sorted(int(index) for index, name in indexed_names
+                       if str(name).strip().casefold() in requested)
+    if not class_ids:
+        raise ValueError("所选 YOLO 权重不包含类别表中的类别，请改用 YOLOE 或对应类别的训练模型")
     results = model.predict(
         image_path,
         conf=box_threshold,
         iou=config.YOLO_IOU,
         max_det=config.YOLO_MAX_DET,
+        classes=class_ids,
         verbose=False,
     )
     annotations = []
@@ -343,6 +355,12 @@ def save_as_voc_xml(annotations, image_path, output_dir):
             flags_node = ET.SubElement(obj, "review_flags")
             for value in dict.fromkeys(flags):
                 ET.SubElement(flags_node, "flag").text = value
+        alternate_labels = [str(value).strip() for value in (ann.get("alternate_labels") or ())
+                            if str(value).strip()]
+        if alternate_labels:
+            labels_node = ET.SubElement(obj, "alternate_labels")
+            for value in dict.fromkeys(alternate_labels):
+                ET.SubElement(labels_node, "label").text = value
 
         points = ann.get("points") or []
         if ann.get("type") == "polygon" and len(points) >= 3:

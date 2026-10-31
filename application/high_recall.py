@@ -9,7 +9,7 @@ import os
 import tempfile
 from dataclasses import replace
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 import config
 
@@ -38,7 +38,8 @@ class TileCropOperation:
     """Materialize one crop for path-based detector adapters."""
 
     def execute(self, image, window, destination):
-        image.crop(window).save(destination)
+        # Temporary crops need exact pixels but no compression effort.
+        image.crop(window).save(destination, compress_level=0)
         return destination
 
 
@@ -62,13 +63,14 @@ class TiledPredictionOperation:
     """Run each enabled detector on overlapping crops and restore global boxes."""
 
     def execute(self, context, provider_ids, image_path, should_stop=lambda: False):
-        if not context.request.config.tiled_inference:
+        if not context.request.config.tiled_inference or not provider_ids:
             return ()
         with Image.open(image_path) as opened:
-            width, height = opened.size
+            image = ImageOps.exif_transpose(opened)
+            width, height = image.size
             if max(width, height) < config.HIGH_RECALL_TILE_MIN_DIMENSION:
                 return ()
-            image = opened.convert("RGB")
+            image = image.convert("RGB")
         windows = tile_windows(width, height, config.HIGH_RECALL_TILE_SIZE,
                                config.HIGH_RECALL_TILE_OVERLAP)
         collected = {provider_id: [] for provider_id in provider_ids}

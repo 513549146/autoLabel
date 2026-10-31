@@ -209,7 +209,7 @@ class AutoPage(QWidget):
             self.workflow_status.setToolTip(status)
             settings = self._quick_workflow.load_settings(self.window.project)
             dual = "recovery_model" in enabled and settings.recovery_policy == RecoveryPolicy.ALL_IMAGES
-            tile_text = "；大图切片补扫" if settings.tiled_inference else ""
+            tile_text = "；主模型大图切片补扫" if "tile_scan" in enabled else ""
             self.strategy_hint.setText(
                 "全图双模型补扫" + tile_text + "；保留单模型候选供审核。" if dual else
                 "当前未启用全图双模型；如需高召回，请在工作流页启用每张图补扫。"
@@ -218,7 +218,7 @@ class AutoPage(QWidget):
             self.project_summary.setText("先从左侧三点菜单新建项目或打开项目。")
             self.workflow_status.setText("")
             self.workflow_status.setToolTip("")
-            self.strategy_hint.setText("默认全图双模型补扫；大图切片补扫。")
+            self.strategy_hint.setText("默认全图双模型补扫；切片补扫可在工作流页启用。")
 
     def _apply_quick_settings(self, settings):
         model_value = ((settings.primary_provider_id, settings.model_weights_path)
@@ -265,6 +265,8 @@ class AutoPage(QWidget):
         library = ModelLibrary()
         project = getattr(self.window, "project", None)
         for entry in library.installed(project):
+            if entry.provider_id == "sam2":
+                continue  # SAM refines masks; it is never a primary detector.
             if not library.is_enabled(project, entry):
                 continue
             if entry.provider_id == "yoloe" and os.path.normcase(entry.path) == os.path.normcase(config.YOLOE_WEIGHTS):
@@ -394,7 +396,7 @@ class AutoPage(QWidget):
             recovery_policy=saved.recovery_policy,
             confidence=self.confidence.value() / 100,
             scope=self.run_scope.currentData() or "new",
-            tiled_inference=saved.tiled_inference,
+            tiled_inference="tile_scan" in WorkflowComposerSettings.load(self.window.project).applied_graph.nodes,
         )
         request = QuickAnnotationRequest(
             project_root=self.window.project_root,
@@ -417,6 +419,7 @@ class AutoPage(QWidget):
         if self.window.project:
             self._quick_workflow.save_settings(self.window.project, settings)
         self._stop_event.clear(); self.start.setEnabled(False); self.stop.setEnabled(True); self.progress.setValue(0)
+        self.log.clear()
         recovery_text = {RecoveryPolicy.EMPTY_ONLY: "空标注自动补扫", RecoveryPolicy.ALL_IMAGES: "每张图片双模型补扫", RecoveryPolicy.OFF: "关闭补扫"}[settings.recovery_policy]
         self.log.appendPlainText(f"准备运行{WorkflowTemplateRegistry().get(self._active_template_id).title}：{len(pending)} 张图片（{self.run_scope.currentText()} · {recovery_text} · 最低置信度 {settings.confidence:.0%}）。")
         self._worker_thread = threading.Thread(

@@ -94,7 +94,7 @@ class ReviewThumbnailMixin:
         if cached is not None:
             self._thumbnail_icons[filename] = cached
             return cached
-        pixmap = QPixmap(os.path.join(self.window.images_dir, filename))
+        pixmap = load_oriented_pixmap(os.path.join(self.window.images_dir, filename))
         if not pixmap.isNull():
             pixmap = pixmap.scaled(108, 66, Qt.KeepAspectRatio, Qt.FastTransformation)
         icon = QIcon(pixmap)

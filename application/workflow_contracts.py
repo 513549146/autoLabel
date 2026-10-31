@@ -36,7 +36,7 @@ class QuickAnnotationConfig:
     recovery_policy: RecoveryPolicy = RecoveryPolicy.ALL_IMAGES
     confidence: float = config.HIGH_RECALL_THRESHOLD
     scope: str = "new"
-    tiled_inference: bool = True
+    tiled_inference: bool = False
 
     def normalized(self) -> "QuickAnnotationConfig":
         prompt = " . ".join(part.strip() for part in self.prompt.split(".") if part.strip())
@@ -116,7 +116,7 @@ class QuickAnnotationSettings:
                 recovery_policy=RecoveryPolicy(raw.get("recovery_policy", RecoveryPolicy.ALL_IMAGES.value)),
                 confidence=float(raw.get("confidence", config.HIGH_RECALL_THRESHOLD)),
                 scope=str(raw.get("scope", "new")),
-                tiled_inference=bool(raw.get("tiled_inference", True)),
+                tiled_inference=bool(raw.get("tiled_inference", False)),
             ).normalized()
         except (TypeError, ValueError, json.JSONDecodeError):
             return QuickAnnotationConfig()
